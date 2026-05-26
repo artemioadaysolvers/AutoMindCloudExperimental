@@ -1,6 +1,6 @@
 (function () {
   "use strict";
- 
+
   const DEFAULT_LOGO_URL =
     "https://raw.githubusercontent.com/artemioadaysolvers/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud2.png";
 
@@ -99,8 +99,12 @@
     const toolsPanelScale = Number(options.toolsPanelScale ?? 0.5);
     const background = options.background ?? 0xffffff;
     const logoUrl = options.logoUrl ?? DEFAULT_LOGO_URL;
-    const showLogo = options.showLogo ?? true;
     const clickUrl = options.clickUrl || null;
+
+    // NUEVO:
+    // true  -> visualizador + interfaces/herramientas
+    // false -> visualizador simple + insignia AutoMind
+    const showInterfaces = options.showInterfaces ?? true;
 
     let host = options.container || document.getElementById(containerId);
 
@@ -290,17 +294,16 @@
     host.appendChild(style);
     host.appendChild(app);
 
-    if (showLogo) {
-      const badge = document.createElement("div");
-      badge.className = "am-badge";
+    // SIEMPRE se muestra la insignia, aunque showInterfaces sea false.
+    const badge = document.createElement("div");
+    badge.className = "am-badge";
 
-      const img = document.createElement("img");
-      img.src = logoUrl;
-      img.alt = "AutoMind";
+    const badgeImg = document.createElement("img");
+    badgeImg.src = logoUrl;
+    badgeImg.alt = "AutoMind";
 
-      badge.appendChild(img);
-      app.appendChild(badge);
-    }
+    badge.appendChild(badgeImg);
+    app.appendChild(badge);
 
     let THREE;
     let TrackballControls;
@@ -384,6 +387,8 @@
     let camera;
     let controls;
     let animationId = null;
+    let onResize = null;
+    let onHotkeyToggle = null;
 
     try {
       let { w, h } = getSize(app);
@@ -894,381 +899,383 @@
       centerAndFrame(1.12);
       setRenderMode("Solid");
 
-      const ui = document.createElement("div");
-      ui.className = "am-ui-root";
+      if (showInterfaces) {
+        const ui = document.createElement("div");
+        ui.className = "am-ui-root";
 
-      const toolsToggle = document.createElement("button");
-      toolsToggle.className = "am-tools-toggle am-btn";
-      toolsToggle.textContent = "Open Tools";
+        const toolsToggle = document.createElement("button");
+        toolsToggle.className = "am-tools-toggle am-btn";
+        toolsToggle.textContent = "Open Tools";
 
-      const dock = document.createElement("div");
-      dock.className = "am-panel am-dock";
+        const dock = document.createElement("div");
+        dock.className = "am-panel am-dock";
 
-      const dockHeader = document.createElement("div");
-      dockHeader.className = "am-hdr";
+        const dockHeader = document.createElement("div");
+        dockHeader.className = "am-hdr";
 
-      const hdrLeft = document.createElement("div");
-      hdrLeft.className = "am-hdr-left";
-      hdrLeft.textContent = "Viewer Tools";
+        const hdrLeft = document.createElement("div");
+        hdrLeft.className = "am-hdr-left";
+        hdrLeft.textContent = "Viewer Tools";
 
-      const hdrRight = document.createElement("div");
-      hdrRight.className = "am-hdr-right";
+        const hdrRight = document.createElement("div");
+        hdrRight.className = "am-hdr-right";
 
-      const snapBtn = document.createElement("button");
-      snapBtn.className = "am-btn";
-      snapBtn.style.padding = "6px 12px";
-      snapBtn.style.borderRadius = "999px";
-      snapBtn.textContent = "Snapshot";
+        const snapBtn = document.createElement("button");
+        snapBtn.className = "am-btn";
+        snapBtn.style.padding = "6px 12px";
+        snapBtn.style.borderRadius = "999px";
+        snapBtn.textContent = "Snapshot";
 
-      hdrRight.appendChild(snapBtn);
-      dockHeader.appendChild(hdrLeft);
-      dockHeader.appendChild(hdrRight);
+        hdrRight.appendChild(snapBtn);
+        dockHeader.appendChild(hdrLeft);
+        dockHeader.appendChild(hdrRight);
 
-      const body = document.createElement("div");
-      body.style.padding = "10px 12px";
+        const body = document.createElement("div");
+        body.style.padding = "10px 12px";
 
-      function row(label, child) {
-        const r = document.createElement("div");
-        r.className = "am-row";
+        function row(label, child) {
+          const r = document.createElement("div");
+          r.className = "am-row";
 
-        const l = document.createElement("div");
-        l.className = "am-lbl";
-        l.textContent = label;
+          const l = document.createElement("div");
+          l.className = "am-lbl";
+          l.textContent = label;
 
-        r.appendChild(l);
-        r.appendChild(child);
+          r.appendChild(l);
+          r.appendChild(child);
 
-        return r;
-      }
+          return r;
+        }
 
-      function mkSelect(opts, val) {
-        const s = document.createElement("select");
+        function mkSelect(opts, val) {
+          const s = document.createElement("select");
 
-        opts.forEach((o) => {
-          const op = document.createElement("option");
-          op.value = o;
-          op.textContent = o;
-          s.appendChild(op);
+          opts.forEach((o) => {
+            const op = document.createElement("option");
+            op.value = o;
+            op.textContent = o;
+            s.appendChild(op);
+          });
+
+          s.value = val;
+
+          return s;
+        }
+
+        function mkSlider(min, max, step, val) {
+          const s = document.createElement("input");
+
+          s.type = "range";
+          s.min = min;
+          s.max = max;
+          s.step = step;
+          s.value = val;
+
+          return s;
+        }
+
+        function mkToggle(label, init = false) {
+          const wrap = document.createElement("label");
+
+          wrap.style.display = "flex";
+          wrap.style.gap = "8px";
+          wrap.style.alignItems = "center";
+          wrap.style.cursor = "pointer";
+
+          const cb = document.createElement("input");
+
+          cb.type = "checkbox";
+          cb.checked = init;
+          cb.style.accentColor = "#0ea5a6";
+
+          const sp = document.createElement("span");
+
+          sp.textContent = label;
+          sp.style.fontWeight = "700";
+          sp.style.color = "#0b3b3c";
+
+          wrap.appendChild(cb);
+          wrap.appendChild(sp);
+
+          return { wrap, cb };
+        }
+
+        const renderModeSel = mkSelect(["Solid", "Wireframe", "X-Ray", "Ghost"], "Solid");
+        const axisSel = mkSelect(["X", "Y", "Z"], "X");
+        const secDist = mkSlider(-1, 1, 0.001, 0);
+        const secToggle = mkToggle("Enable section", false);
+        const secPlaneToggle = mkToggle("Show slice plane", false);
+
+        const viewsRow = document.createElement("div");
+
+        Object.assign(viewsRow.style, {
+          display: "grid",
+          gridTemplateColumns: "repeat(4,1fr)",
+          gap: "8px",
+          margin: "8px 0",
         });
 
-        s.value = val;
+        const bIso = document.createElement("button");
+        const bTop = document.createElement("button");
+        const bFront = document.createElement("button");
+        const bRight = document.createElement("button");
 
-        return s;
-      }
+        [bIso, bTop, bFront, bRight].forEach((b) => {
+          b.className = "am-btn";
+          b.style.padding = "8px";
+          b.style.borderRadius = "10px";
+          viewsRow.appendChild(b);
+        });
 
-      function mkSlider(min, max, step, val) {
-        const s = document.createElement("input");
+        bIso.textContent = "Iso";
+        bTop.textContent = "Top";
+        bFront.textContent = "Front";
+        bRight.textContent = "Right";
 
-        s.type = "range";
-        s.min = min;
-        s.max = max;
-        s.step = step;
-        s.value = val;
+        const projSel = mkSelect(["Perspective", "Orthographic"], "Perspective");
 
-        return s;
-      }
+        const togGrid = mkToggle("Grid", false);
+        const togGround = mkToggle("Ground & shadows", false);
+        const togAxes = mkToggle("XYZ axes", false);
 
-      function mkToggle(label, init = false) {
-        const wrap = document.createElement("label");
+        body.appendChild(row("Render mode", renderModeSel));
+        body.appendChild(row("Section axis", axisSel));
+        body.appendChild(row("Section dist", secDist));
+        body.appendChild(row("", secToggle.wrap));
+        body.appendChild(row("", secPlaneToggle.wrap));
+        body.appendChild(row("Views", viewsRow));
+        body.appendChild(row("Projection", projSel));
+        body.appendChild(row("", togGrid.wrap));
+        body.appendChild(row("", togGround.wrap));
+        body.appendChild(row("", togAxes.wrap));
 
-        wrap.style.display = "flex";
-        wrap.style.gap = "8px";
-        wrap.style.alignItems = "center";
-        wrap.style.cursor = "pointer";
+        dock.appendChild(dockHeader);
+        dock.appendChild(body);
 
-        const cb = document.createElement("input");
+        ui.appendChild(dock);
+        ui.appendChild(toolsToggle);
 
-        cb.type = "checkbox";
-        cb.checked = init;
-        cb.style.accentColor = "#0ea5a6";
+        app.appendChild(ui);
 
-        const sp = document.createElement("span");
+        let dockOpen = false;
 
-        sp.textContent = label;
-        sp.style.fontWeight = "700";
-        sp.style.color = "#0b3b3c";
+        function setDock(open) {
+          dockOpen = !!open;
 
-        wrap.appendChild(cb);
-        wrap.appendChild(sp);
-
-        return { wrap, cb };
-      }
-
-      const renderModeSel = mkSelect(["Solid", "Wireframe", "X-Ray", "Ghost"], "Solid");
-      const axisSel = mkSelect(["X", "Y", "Z"], "X");
-      const secDist = mkSlider(-1, 1, 0.001, 0);
-      const secToggle = mkToggle("Enable section", false);
-      const secPlaneToggle = mkToggle("Show slice plane", false);
-
-      const viewsRow = document.createElement("div");
-
-      Object.assign(viewsRow.style, {
-        display: "grid",
-        gridTemplateColumns: "repeat(4,1fr)",
-        gap: "8px",
-        margin: "8px 0",
-      });
-
-      const bIso = document.createElement("button");
-      const bTop = document.createElement("button");
-      const bFront = document.createElement("button");
-      const bRight = document.createElement("button");
-
-      [bIso, bTop, bFront, bRight].forEach((b) => {
-        b.className = "am-btn";
-        b.style.padding = "8px";
-        b.style.borderRadius = "10px";
-        viewsRow.appendChild(b);
-      });
-
-      bIso.textContent = "Iso";
-      bTop.textContent = "Top";
-      bFront.textContent = "Front";
-      bRight.textContent = "Right";
-
-      const projSel = mkSelect(["Perspective", "Orthographic"], "Perspective");
-
-      const togGrid = mkToggle("Grid", false);
-      const togGround = mkToggle("Ground & shadows", false);
-      const togAxes = mkToggle("XYZ axes", false);
-
-      body.appendChild(row("Render mode", renderModeSel));
-      body.appendChild(row("Section axis", axisSel));
-      body.appendChild(row("Section dist", secDist));
-      body.appendChild(row("", secToggle.wrap));
-      body.appendChild(row("", secPlaneToggle.wrap));
-      body.appendChild(row("Views", viewsRow));
-      body.appendChild(row("Projection", projSel));
-      body.appendChild(row("", togGrid.wrap));
-      body.appendChild(row("", togGround.wrap));
-      body.appendChild(row("", togAxes.wrap));
-
-      dock.appendChild(dockHeader);
-      dock.appendChild(body);
-
-      ui.appendChild(dock);
-      ui.appendChild(toolsToggle);
-
-      app.appendChild(ui);
-
-      let dockOpen = false;
-
-      function setDock(open) {
-        dockOpen = !!open;
-
-        if (dockOpen) {
-          dock.classList.add("open");
-          toolsToggle.textContent = "Close Tools";
-        } else {
-          dock.classList.remove("open");
-          toolsToggle.textContent = "Open Tools";
-        }
-      }
-
-      setDock(false);
-
-      toolsToggle.addEventListener("click", () => {
-        playClick();
-        setDock(!dockOpen);
-      });
-
-      function onHotkeyToggle(e) {
-        const tag = ((e.target && e.target.tagName) || "").toLowerCase();
-
-        if (
-          tag === "input" ||
-          tag === "textarea" ||
-          tag === "select" ||
-          e.isComposing
-        ) {
-          return;
+          if (dockOpen) {
+            dock.classList.add("open");
+            toolsToggle.textContent = "Close Tools";
+          } else {
+            dock.classList.remove("open");
+            toolsToggle.textContent = "Open Tools";
+          }
         }
 
-        if (e.key === "t" || e.key === "T" || e.key === "c" || e.key === "C") {
-          e.preventDefault();
+        setDock(false);
+
+        toolsToggle.addEventListener("click", () => {
           playClick();
           setDock(!dockOpen);
-        }
-      }
+        });
 
-      document.addEventListener("keydown", onHotkeyToggle, true);
+        onHotkeyToggle = function (e) {
+          const tag = ((e.target && e.target.tagName) || "").toLowerCase();
 
-      snapBtn.addEventListener("click", () => {
-        playClick();
+          if (
+            tag === "input" ||
+            tag === "textarea" ||
+            tag === "select" ||
+            e.isComposing
+          ) {
+            return;
+          }
 
-        try {
-          const url = renderer.domElement.toDataURL("image/png");
-          const a = document.createElement("a");
+          if (e.key === "t" || e.key === "T" || e.key === "c" || e.key === "C") {
+            e.preventDefault();
+            playClick();
+            setDock(!dockOpen);
+          }
+        };
 
-          a.href = url;
-          a.download = "step_snapshot.png";
-          a.click();
-        } catch (e) {}
-      });
+        document.addEventListener("keydown", onHotkeyToggle, true);
 
-      renderModeSel.addEventListener("change", () => {
-        playClick();
-        setRenderMode(renderModeSel.value);
-      });
+        snapBtn.addEventListener("click", () => {
+          playClick();
 
-      axisSel.addEventListener("change", () => {
-        playClick();
-        secAxis = axisSel.value;
-        updateSectionPlane(parseFloat(secDist.value) || 0);
-      });
+          try {
+            const url = renderer.domElement.toDataURL("image/png");
+            const a = document.createElement("a");
 
-      secDist.addEventListener("input", () => {
-        updateSectionPlane(parseFloat(secDist.value) || 0);
-      });
+            a.href = url;
+            a.download = "step_snapshot.png";
+            a.click();
+          } catch (e) {}
+        });
 
-      secToggle.cb.addEventListener("change", () => {
-        playClick();
-        secEnabled = !!secToggle.cb.checked;
-        updateSectionPlane(parseFloat(secDist.value) || 0);
-      });
+        renderModeSel.addEventListener("change", () => {
+          playClick();
+          setRenderMode(renderModeSel.value);
+        });
 
-      secPlaneToggle.cb.addEventListener("change", () => {
-        playClick();
-        secPlaneVisible = !!secPlaneToggle.cb.checked;
-        updateSectionPlane(parseFloat(secDist.value) || 0);
-      });
-
-      bIso.addEventListener("click", () => {
-        playClick();
-        viewIso();
-      });
-
-      bTop.addEventListener("click", () => {
-        playClick();
-        viewTop();
-      });
-
-      bFront.addEventListener("click", () => {
-        playClick();
-        viewFront();
-      });
-
-      bRight.addEventListener("click", () => {
-        playClick();
-        viewRight();
-      });
-
-      projSel.addEventListener("change", () => {
-        playClick();
-
-        const wasSectionEnabled = secEnabled;
-
-        if (secEnabled) {
-          secEnabled = false;
+        axisSel.addEventListener("change", () => {
+          playClick();
+          secAxis = axisSel.value;
           updateSectionPlane(parseFloat(secDist.value) || 0);
-        }
+        });
 
-        if (!boundsInfo) {
-          camera = projSel.value === "Perspective" ? persp : ortho;
-          controls.object = camera;
+        secDist.addEventListener("input", () => {
+          updateSectionPlane(parseFloat(secDist.value) || 0);
+        });
+
+        secToggle.cb.addEventListener("change", () => {
+          playClick();
+          secEnabled = !!secToggle.cb.checked;
+          updateSectionPlane(parseFloat(secDist.value) || 0);
+        });
+
+        secPlaneToggle.cb.addEventListener("change", () => {
+          playClick();
+          secPlaneVisible = !!secPlaneToggle.cb.checked;
+          updateSectionPlane(parseFloat(secDist.value) || 0);
+        });
+
+        bIso.addEventListener("click", () => {
+          playClick();
+          viewIso();
+        });
+
+        bTop.addEventListener("click", () => {
+          playClick();
+          viewTop();
+        });
+
+        bFront.addEventListener("click", () => {
+          playClick();
+          viewFront();
+        });
+
+        bRight.addEventListener("click", () => {
+          playClick();
+          viewRight();
+        });
+
+        projSel.addEventListener("change", () => {
+          playClick();
+
+          const wasSectionEnabled = secEnabled;
+
+          if (secEnabled) {
+            secEnabled = false;
+            updateSectionPlane(parseFloat(secDist.value) || 0);
+          }
+
+          if (!boundsInfo) {
+            camera = projSel.value === "Perspective" ? persp : ortho;
+            controls.object = camera;
+            controls.update();
+            applySizeToCamera();
+            return;
+          }
+
+          const s = getSize(app);
+          const aspect = s.w / s.h;
+          const span = Math.max(boundsInfo.maxDim, GRID_SIZE * 0.5);
+          const target = boundsInfo.center.clone();
+
+          if (projSel.value === "Orthographic" && camera.isPerspectiveCamera) {
+            const dir = camera.position.clone().sub(target).normalize();
+            const distance = Math.max(span * 2, 1);
+
+            ortho.left = -span * aspect;
+            ortho.right = span * aspect;
+            ortho.top = span;
+            ortho.bottom = -span;
+
+            ortho.position.copy(target).add(dir.multiplyScalar(distance));
+            ortho.up.copy(camera.up);
+            ortho.lookAt(target);
+            ortho.updateProjectionMatrix();
+
+            camera = ortho;
+            controls.object = ortho;
+          } else if (
+            projSel.value === "Perspective" &&
+            camera.isOrthographicCamera
+          ) {
+            const dir = camera.position.clone().sub(target).normalize();
+            const distance = Math.max(span * 3, 1);
+
+            persp.aspect = aspect;
+            persp.fov = 60;
+            persp.near = 0.01;
+            persp.far = 10000;
+
+            persp.position.copy(target).add(dir.multiplyScalar(distance));
+            persp.up.copy(camera.up);
+            persp.lookAt(target);
+            persp.updateProjectionMatrix();
+
+            camera = persp;
+            controls.object = persp;
+          }
+
+          controls.target.copy(target);
           controls.update();
           applySizeToCamera();
-          return;
-        }
 
-        const s = getSize(app);
-        const aspect = s.w / s.h;
-        const span = Math.max(boundsInfo.maxDim, GRID_SIZE * 0.5);
-        const target = boundsInfo.center.clone();
+          if (wasSectionEnabled) {
+            setTimeout(() => {
+              secEnabled = true;
+              secToggle.cb.checked = true;
+              updateSectionPlane(parseFloat(secDist.value) || 0);
+            }, 100);
+          }
+        });
 
-        if (projSel.value === "Orthographic" && camera.isPerspectiveCamera) {
-          const dir = camera.position.clone().sub(target).normalize();
-          const distance = Math.max(span * 2, 1);
+        togGrid.cb.addEventListener("change", () => {
+          playClick();
+          grid.visible = !!togGrid.cb.checked;
+        });
 
-          ortho.left = -span * aspect;
-          ortho.right = span * aspect;
-          ortho.top = span;
-          ortho.bottom = -span;
+        togGround.cb.addEventListener("change", () => {
+          playClick();
 
-          ortho.position.copy(target).add(dir.multiplyScalar(distance));
-          ortho.up.copy(camera.up);
-          ortho.lookAt(target);
-          ortho.updateProjectionMatrix();
+          const on = !!togGround.cb.checked;
 
-          camera = ortho;
-          controls.object = ortho;
-        } else if (
-          projSel.value === "Perspective" &&
-          camera.isOrthographicCamera
-        ) {
-          const dir = camera.position.clone().sub(target).normalize();
-          const distance = Math.max(span * 3, 1);
+          ground.visible = on;
+          renderer.shadowMap.enabled = on;
+          dirLight.castShadow = on;
 
-          persp.aspect = aspect;
-          persp.fov = 60;
-          persp.near = 0.01;
-          persp.far = 10000;
+          if (model) {
+            model.traverse((n) => {
+              if (n.isMesh) {
+                n.castShadow = on;
+                n.receiveShadow = on;
+              }
+            });
+          }
 
-          persp.position.copy(target).add(dir.multiplyScalar(distance));
-          persp.up.copy(camera.up);
-          persp.lookAt(target);
-          persp.updateProjectionMatrix();
+          renderer.render(scene, camera);
+        });
 
-          camera = persp;
-          controls.object = persp;
-        }
+        togAxes.cb.addEventListener("change", () => {
+          playClick();
 
-        controls.target.copy(target);
-        controls.update();
-        applySizeToCamera();
+          axesHelper.visible = !!togAxes.cb.checked;
 
-        if (wasSectionEnabled) {
-          setTimeout(() => {
-            secEnabled = true;
-            secToggle.cb.checked = true;
-            updateSectionPlane(parseFloat(secDist.value) || 0);
-          }, 100);
-        }
-      });
+          if (axesHelper.visible) {
+            sizeAxesHelper(_lastMaxDim);
+          }
+        });
+      }
 
-      togGrid.cb.addEventListener("change", () => {
-        playClick();
-        grid.visible = !!togGrid.cb.checked;
-      });
-
-      togGround.cb.addEventListener("change", () => {
-        playClick();
-
-        const on = !!togGround.cb.checked;
-
-        ground.visible = on;
-        renderer.shadowMap.enabled = on;
-        dirLight.castShadow = on;
-
-        if (model) {
-          model.traverse((n) => {
-            if (n.isMesh) {
-              n.castShadow = on;
-              n.receiveShadow = on;
-            }
-          });
-        }
-
-        renderer.render(scene, camera);
-      });
-
-      togAxes.cb.addEventListener("change", () => {
-        playClick();
-
-        axesHelper.visible = !!togAxes.cb.checked;
-
-        if (axesHelper.visible) {
-          sizeAxesHelper(_lastMaxDim);
-        }
-      });
-
-      function onResize() {
+      onResize = function () {
         const s = getSize(app);
 
         renderer.setSize(s.w, s.h, false);
         applySizeToCamera();
         renderer.render(scene, camera);
-      }
+      };
 
       window.addEventListener("resize", onResize);
 
@@ -1284,8 +1291,15 @@
         dispose: function () {
           try {
             cancelAnimationFrame(animationId);
-            window.removeEventListener("resize", onResize);
-            document.removeEventListener("keydown", onHotkeyToggle, true);
+
+            if (onResize) {
+              window.removeEventListener("resize", onResize);
+            }
+
+            if (onHotkeyToggle) {
+              document.removeEventListener("keydown", onHotkeyToggle, true);
+            }
+
             controls.dispose();
             renderer.dispose();
             host.innerHTML = "";
