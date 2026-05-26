@@ -1,6 +1,6 @@
 (function () {
   "use strict";
-
+ 
   const DEFAULT_LOGO_URL =
     "https://raw.githubusercontent.com/artemioadaysolvers/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud2.png";
 
