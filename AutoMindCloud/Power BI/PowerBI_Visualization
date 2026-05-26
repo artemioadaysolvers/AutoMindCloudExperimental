@@ -1,0 +1,121 @@
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.181.0/build/three.module.js";
+import { OrbitControls } from "https://cdn.jsdelivr.net/npm/three@0.181.0/examples/jsm/controls/OrbitControls.js";
+import { STLLoader } from "https://cdn.jsdelivr.net/npm/three@0.181.0/examples/jsm/loaders/STLLoader.js";
+
+export function visualizarSTLBase64(stlBase64, containerId = "viewer") {
+  const container =
+    typeof containerId === "string"
+      ? document.getElementById(containerId)
+      : containerId;
+
+  if (!container) throw new Error("No existe el contenedor del visor.");
+
+  container.innerHTML = "";
+
+  function base64ToArrayBuffer(base64) {
+    const clean = base64.replace(/^data:.*?;base64,/, "").replace(/\s/g, "");
+    const binary = atob(clean);
+    const bytes = new Uint8Array(binary.length);
+
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+
+    return bytes.buffer;
+  }
+
+  const width = container.clientWidth || 800;
+  const height = container.clientHeight || 600;
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xffffff);
+
+  const camera = new THREE.PerspectiveCamera(60, width / height, 0.01, 100000);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(width, height);
+  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  container.appendChild(renderer.domElement);
+
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.9));
+
+  const light = new THREE.DirectionalLight(0xffffff, 1.3);
+  light.position.set(5, 5, 5);
+  scene.add(light);
+
+  const loader = new STLLoader();
+  const geometry = loader.parse(base64ToArrayBuffer(stlBase64));
+  geometry.computeVertexNormals();
+  geometry.computeBoundingBox();
+
+  const material = new THREE.MeshStandardMaterial({
+    color: 0xcccccc,
+    metalness: 0.2,
+    roughness: 0.7
+  });
+
+  const mesh = new THREE.Mesh(geometry, material);
+  scene.add(mesh);
+
+  const box = geometry.boundingBox;
+  const center = new THREE.Vector3();
+  const size = new THREE.Vector3();
+
+  box.getCenter(center);
+  box.getSize(size);
+
+  mesh.position.sub(center);
+
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  const distance = maxDim * 2.2;
+
+  camera.position.set(distance, distance, distance);
+  camera.near = maxDim / 1000;
+  camera.far = maxDim * 1000;
+  camera.updateProjectionMatrix();
+
+  controls.target.set(0, 0, 0);
+  controls.update();
+
+  function resize() {
+    const w = container.clientWidth || 800;
+    const h = container.clientHeight || 600;
+
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+  }
+
+  const resizeObserver = new ResizeObserver(resize);
+  resizeObserver.observe(container);
+
+  let running = true;
+
+  function animate() {
+    if (!running) return;
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  }
+
+  animate();
+
+  return {
+    scene,
+    camera,
+    renderer,
+    controls,
+    mesh,
+    dispose() {
+      running = false;
+      resizeObserver.disconnect();
+      geometry.dispose();
+      material.dispose();
+      renderer.dispose();
+      container.innerHTML = "";
+    }
+  };
+}
