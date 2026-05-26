@@ -1,7 +1,7 @@
 
 
 <p align="center">
-  <img width="900" height="900" alt="AutoMind Logo"
+  <img width="900" height="400" alt="AutoMind Logo"
        src="https://github.com/user-attachments/assets/227cc897-5e0d-4bcc-8683-e76f21472ea5" />
 </p>
 
@@ -10,9 +10,9 @@
 
 <!-- 🔹 MINI IMAGES SIDE BY SIDE -->
 <p align="center">
-  <img width="200" height="200" alt="Preview 1"
+  <img width="200" height="190" alt="Preview 1"
        src="https://github.com/user-attachments/assets/18c36cdb-51f9-48f0-9458-52fa5ef2e844" style="margin-right: 50px;" />    
-  <img width="300" height="300" alt="Preview 2"
+  <img width="300" height="190" alt="Preview 2"
        src="https://github.com/user-attachments/assets/04ae2b87-1f10-4dc4-ab07-e680356fd7ad"" />
 </p>
 
