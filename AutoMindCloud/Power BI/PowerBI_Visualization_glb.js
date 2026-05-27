@@ -1,1321 +1,560 @@
-(function () {
+// ============================================================
+// AutoMindCloud - GLB Base64 Viewer
+// Funcion global para jsDelivr:
+// window.renderGlbBase64Viewer(glbBase64, options)
+// ============================================================
+
+(function (global) {
   "use strict";
 
-  const DEFAULT_LOGO_URL =
-    "https://raw.githubusercontent.com/artemioadaysolvers/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud2.png";
+  const DEFAULTS = {
+    container: null,
 
-  const OCCT_URL =
-    "https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js.js";
+    height: 520,
+    background: "transparent",
+    borderRadius: "14px",
 
-  const THREE_URL =
-    "https://esm.sh/three@0.181.0";
+    // Logo inferior derecho
+    showBadge: true,
+    badgeUrl: "https://raw.githubusercontent.com/artemioadaysolvers/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud2.png",
+    badgeWidthPx: 180,
+    badgeRightPx: 14,
+    badgeBottomPx: 14,
+    badgeOpacity: 0.95,
 
-  const TRACKBALL_URL =
-    "https://esm.sh/three@0.181.0/examples/jsm/controls/TrackballControls.js?deps=three@0.181.0";
+    // Orientacion base del GLB
+    frontFaceRotX: -1.57079632679, // -pi/2
+    frontFaceRotY: 3.14159265359,  // pi
+    frontFaceRotZ: 0.0,
 
-  function loadScriptOnce(src, globalName) {
-    return new Promise((resolve, reject) => {
-      if (globalName && window[globalName]) return resolve(window[globalName]);
+    // Giro
+    autoRotate: true,
+    rotationsPerSecond: 0.045,
 
-      const existing = [...document.scripts].find((s) => s.src === src);
-      if (existing) {
-        existing.addEventListener("load", () => resolve(window[globalName]));
-        existing.addEventListener("error", reject);
-        return;
-      }
+    // Tamaño visual
+    targetModelSize: 3.2,
+    fitPadding: 1.18,
 
-      const s = document.createElement("script");
-      s.src = src;
-      s.async = true;
-      s.onload = () => resolve(globalName ? window[globalName] : true);
-      s.onerror = reject;
-      document.head.appendChild(s);
-    });
+    // Performance
+    maxPixelRatio: 1.0,
+    antialias: true,
+    preserveDrawingBuffer: false,
+
+    // Render
+    alpha: true,
+    clearContainer: true,
+
+    // Camara
+    cameraFov: 32,
+
+    // Luces
+    ambientIntensity: 1.35,
+    keyLightIntensity: 1.25,
+    fillLight1Intensity: 0.35,
+    fillLight2Intensity: 0.25,
+
+    // Draco
+    useDraco: true,
+    dracoDecoderPath: "https://www.gstatic.com/draco/v1/decoders/",
+
+    // Three.js
+    threeVersion: "0.181.0"
+  };
+
+  let threePromise = null;
+
+  function mergeOptions(options) {
+    return Object.assign({}, DEFAULTS, options || {});
   }
 
-  async function loadDependencies() {
-    await loadScriptOnce(OCCT_URL, "occtimportjs");
+  function resolveContainer(container) {
+    if (!container) return null;
 
-    const THREE = await import(THREE_URL);
-    const { TrackballControls } = await import(TRACKBALL_URL);
+    if (typeof container === "string") {
+      return (
+        document.querySelector(container) ||
+        document.getElementById(container.replace(/^#/, ""))
+      );
+    }
 
-    return {
-      THREE,
-      TrackballControls,
-      occtimportjs: window.occtimportjs,
-    };
+    if (container instanceof HTMLElement) {
+      return container;
+    }
+
+    return null;
+  }
+
+  function cssSize(value) {
+    if (typeof value === "number") return value + "px";
+    if (typeof value === "string") return value;
+    return "520px";
   }
 
   function cleanBase64(b64) {
-    if (!b64) return "";
-    return String(b64).includes(",") ? String(b64).split(",").pop() : String(b64);
+    b64 = String(b64 || "").trim();
+    return b64.includes(",") ? b64.split(",").pop() : b64;
   }
 
-  function base64ToUint8Array(b64) {
+  function base64ToArrayBuffer(b64) {
     b64 = cleanBase64(b64);
-    const bin = atob(b64);
-    const len = bin.length;
-    const out = new Uint8Array(len);
+
+    const binary = atob(b64);
+    const len = binary.length;
+    const bytes = new Uint8Array(len);
 
     for (let i = 0; i < len; i++) {
-      out[i] = bin.charCodeAt(i);
+      bytes[i] = binary.charCodeAt(i);
     }
 
-    return out;
+    return bytes.buffer;
   }
 
   function showError(container, msg) {
     container.innerHTML = "";
+
     const box = document.createElement("div");
-    box.style.cssText = `
-      width:100%;
-      height:100%;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      box-sizing:border-box;
-      padding:16px;
-      font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,Arial;
-      color:#991b1b;
-      background:#fff1f2;
-      border:1px solid #fecdd3;
-      border-radius:14px;
-      font-weight:700;
-      text-align:center;
-    `;
+    box.style.width = "100%";
+    box.style.height = "100%";
+    box.style.display = "flex";
+    box.style.alignItems = "center";
+    box.style.justifyContent = "center";
+    box.style.padding = "16px";
+    box.style.boxSizing = "border-box";
+    box.style.fontFamily = "Arial, sans-serif";
+    box.style.color = "#991b1b";
+    box.style.background = "#fff1f2";
+    box.style.border = "1px solid #fecdd3";
+    box.style.borderRadius = "14px";
+    box.style.fontWeight = "700";
+    box.style.textAlign = "center";
     box.textContent = msg;
+
     container.appendChild(box);
   }
 
-  async function renderStepBase64Viewer(stepBase64, options) {
-    options = options || {};
-
-    if (typeof options === "string") {
-      options = { containerId: options };
+  async function loadThree(version) {
+    if (!threePromise) {
+      threePromise = Promise.all([
+        import(`https://esm.sh/three@${version}`),
+        import(`https://esm.sh/three@${version}/examples/jsm/loaders/GLTFLoader.js?deps=three@${version}`),
+        import(`https://esm.sh/three@${version}/examples/jsm/loaders/DRACOLoader.js?deps=three@${version}`)
+      ]).then(([THREE, gltfModule, dracoModule]) => {
+        return {
+          THREE,
+          GLTFLoader: gltfModule.GLTFLoader,
+          DRACOLoader: dracoModule.DRACOLoader
+        };
+      });
     }
 
-    const containerId = options.containerId || "step-viewer";
-    const heightPx = Number(options.heightPx || 390);
-    const toolsPanelScale = Number(options.toolsPanelScale ?? 0.5);
-    const background = options.background ?? 0xffffff;
-    const logoUrl = options.logoUrl ?? DEFAULT_LOGO_URL;
-    const clickUrl = options.clickUrl || null;
+    return threePromise;
+  }
 
-    // NUEVO:
-    // true  -> visualizador + interfaces/herramientas
-    // false -> visualizador simple + insignia AutoMind
-    const showInterfaces = options.showInterfaces ?? true;
-
-    let host = options.container || document.getElementById(containerId);
-
-    if (!host) {
-      host = document.createElement("div");
-      host.id = containerId;
-      document.body.appendChild(host);
+  function prepareContainer(container, options) {
+    if (options.clearContainer) {
+      container.innerHTML = "";
     }
 
-    host.innerHTML = "";
-    host.style.width = "100%";
-    host.style.height = `${heightPx}px`;
-    host.style.position = "relative";
-    host.style.overflow = "hidden";
-    host.style.background = "transparent";
+    container.style.width = container.style.width || "100%";
+    container.style.height = cssSize(options.height);
+    container.style.position = "relative";
+    container.style.overflow = "hidden";
+    container.style.background = options.background;
+    container.style.borderRadius = options.borderRadius;
+    container.style.contain = "layout paint size";
+  }
 
-    if (!stepBase64) {
-      showError(host, "No se recibió base64 STEP.");
-      return null;
-    }
+  function addBadge(container, options) {
+    if (!options.showBadge || !options.badgeUrl) return null;
 
-    const uid = "am_step_viewer_" + Math.random().toString(36).slice(2);
+    const badge = document.createElement("img");
+    badge.src = options.badgeUrl;
+    badge.alt = "AutoMindCloud";
 
-    const style = document.createElement("style");
-    style.textContent = `
-      #${uid} {
-        width:100%;
-        height:${heightPx}px;
-        box-sizing:border-box;
-        position:relative;
-        overflow:hidden;
-        background:transparent;
-        font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,Arial;
+    badge.style.position = "absolute";
+    badge.style.right = options.badgeRightPx + "px";
+    badge.style.bottom = options.badgeBottomPx + "px";
+    badge.style.width = options.badgeWidthPx + "px";
+    badge.style.maxWidth = "34%";
+    badge.style.height = "auto";
+    badge.style.zIndex = "20";
+    badge.style.pointerEvents = "none";
+    badge.style.userSelect = "none";
+    badge.style.opacity = String(options.badgeOpacity);
+    badge.style.display = "block";
+
+    container.appendChild(badge);
+
+    return badge;
+  }
+
+  function disposeObject3D(root) {
+    if (!root) return;
+
+    root.traverse((obj) => {
+      if (obj.geometry) {
+        obj.geometry.dispose();
       }
 
-      #${uid} canvas {
-        display:block;
-        width:100% !important;
-        height:100% !important;
-      }
+      if (obj.material) {
+        const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
 
-      #${uid} .am-ui-root {
-        position:absolute;
-        inset:0;
-        pointer-events:none;
-        z-index:9999;
-        font-family:"Computer Modern","CMU Serif",Inter,system-ui,-apple-system,"Segoe UI",Roboto,Arial;
-      }
+        materials.forEach((mat) => {
+          if (!mat) return;
 
-      #${uid} .am-panel {
-        background:#ffffff;
-        border:1px solid #e6e6e6;
-        border-radius:18px;
-        box-shadow:0 12px 36px rgba(0,0,0,.14);
-        pointer-events:auto;
-        overflow:hidden;
-      }
+          for (const key in mat) {
+            const value = mat[key];
 
-      #${uid} .am-btn {
-        padding:8px 12px;
-        border-radius:12px;
-        border:1px solid #e6e6e6;
-        background:#ffffff;
-        color:#0b3b3c;
-        font-weight:700;
-        cursor:pointer;
-        box-shadow:0 10px 24px rgba(0,0,0,.12);
-        transition:all 0.16s ease-out;
-      }
+            if (value && typeof value === "object" && typeof value.dispose === "function") {
+              value.dispose();
+            }
+          }
 
-      #${uid} .am-btn:hover {
-        transform:translateY(-1px) scale(1.02);
-        background:#ecfeff;
-        border-color:#0ea5a6;
-        box-shadow:0 16px 40px rgba(0,0,0,.16);
-      }
-
-      #${uid} .am-row {
-        display:grid;
-        grid-template-columns:120px 1fr;
-        gap:10px;
-        align-items:center;
-        margin:6px 0;
-      }
-
-      #${uid} .am-lbl {
-        color:#577e7f;
-        font-weight:700;
-      }
-
-      #${uid} .am-hdr {
-        display:flex;
-        align-items:center;
-        justify-content:space-between;
-        gap:8px;
-        padding:10px 12px;
-        border-bottom:1px solid #e6e6e6;
-        background:#0ea5a6;
-      }
-
-      #${uid} .am-hdr-left {
-        font-weight:800;
-        color:#ffffff;
-      }
-
-      #${uid} .am-hdr-right {
-        display:flex;
-        gap:6px;
-        align-items:center;
-      }
-
-      #${uid} select,
-      #${uid} input[type="range"] {
-        padding:8px;
-        border:1px solid #e6e6e6;
-        border-radius:10px;
-        accent-color:#0ea5a6;
-      }
-
-      #${uid} .am-tools-toggle {
-        position:absolute;
-        right:14px;
-        top:14px;
-        pointer-events:auto;
-        padding:8px 12px;
-        border-radius:999px;
-        border:1px solid #e6e6e6;
-        background:#ffffff;
-        color:#0b3b3c;
-        font-weight:700;
-        box-shadow:0 12px 36px rgba(0,0,0,.14);
-        z-index:10000;
-        transition:all 0.16s ease-out;
-      }
-
-      #${uid} .am-tools-toggle:hover {
-        transform:translateY(-1px) scale(1.02);
-        background:#ecfeff;
-        border-color:#0ea5a6;
-        box-shadow:0 16px 40px rgba(0,0,0,.18);
-      }
-
-      #${uid} .am-panel.am-dock {
-        position:absolute;
-        right:14px;
-        top:54px;
-        width:440px;
-        transform-origin:top right;
-        transform:translateX(560px) scale(${toolsPanelScale});
-        opacity:0;
-        pointer-events:none;
-        transition:
-          transform 260ms cubic-bezier(.2,.7,.2,1),
-          opacity 180ms ease;
-      }
-
-      #${uid} .am-panel.am-dock.open {
-        transform:translateX(0) scale(${toolsPanelScale});
-        opacity:1;
-        pointer-events:auto;
-      }
-
-      #${uid} .am-badge {
-        position:absolute;
-        bottom:12px;
-        right:14px;
-        z-index:10;
-        user-select:none;
-        pointer-events:none;
-        display:inline-block;
-        transform:scale(1.5) translateX(-15px);
-        transform-origin:bottom right;
-        margin:0;
-        overflow:visible;
-      }
-
-      #${uid} .am-badge img {
-        display:block;
-        height:40px;
-        width:auto;
-      }
-    `;
-
-    const app = document.createElement("div");
-    app.id = uid;
-
-    host.appendChild(style);
-    host.appendChild(app);
-
-    // SIEMPRE se muestra la insignia, aunque showInterfaces sea false.
-    const badge = document.createElement("div");
-    badge.className = "am-badge";
-
-    const badgeImg = document.createElement("img");
-    badgeImg.src = logoUrl;
-    badgeImg.alt = "AutoMind";
-
-    badge.appendChild(badgeImg);
-    app.appendChild(badge);
-
-    let THREE;
-    let TrackballControls;
-    let occtimportjs;
-
-    try {
-      const deps = await loadDependencies();
-      THREE = deps.THREE;
-      TrackballControls = deps.TrackballControls;
-      occtimportjs = deps.occtimportjs;
-    } catch (e) {
-      console.error(e);
-      showError(host, "No se pudieron cargar las librerías 3D.");
-      return null;
-    }
-
-    const THEME = {
-      teal: 0x0ea5a6,
-      bgCanvas: background,
-    };
-
-    const CLICK_URL = clickUrl;
-
-    let audioCtx = null;
-    let clickBuf = null;
-
-    async function ensureClickBuffer() {
-      if (!CLICK_URL) return;
-
-      if (!audioCtx) {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      }
-
-      if (!clickBuf) {
-        const resp = await fetch(CLICK_URL);
-        const arr = await resp.arrayBuffer();
-
-        clickBuf = await new Promise((res, rej) => {
-          try {
-            audioCtx.decodeAudioData(arr, res, rej);
-          } catch (e) {
-            rej(e);
+          if (typeof mat.dispose === "function") {
+            mat.dispose();
           }
         });
       }
+    });
+  }
+
+  async function renderGlbBase64Viewer(glbBase64, options) {
+    const opts = mergeOptions(options);
+    const container = resolveContainer(opts.container || opts.element || opts.target || opts.containerId);
+
+    if (!container) {
+      throw new Error(
+        "renderGlbBase64Viewer: debes pasar options.container como selector, id o elemento HTML."
+      );
     }
 
-    function playClick() {
-      if (!CLICK_URL) return;
+    if (!glbBase64 || typeof glbBase64 !== "string") {
+      showError(container, "No se recibió un GLB en base64.");
+      throw new Error("renderGlbBase64Viewer: glbBase64 vacío o inválido.");
+    }
 
-      if (!audioCtx) {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      }
-
-      if (audioCtx.state === "suspended") audioCtx.resume();
-
-      if (!clickBuf) {
-        ensureClickBuffer()
-          .then(() => playClick())
-          .catch(() => {});
-        return;
-      }
-
-      const src = audioCtx.createBufferSource();
-      src.buffer = clickBuf;
-      src.connect(audioCtx.destination);
-
+    if (container.__glbViewerDestroy) {
       try {
-        src.start();
+        container.__glbViewerDestroy();
       } catch (e) {}
     }
 
-    function getSize(container) {
-      const w = container.clientWidth || 800;
-      const h = container.clientHeight || heightPx;
-      return { w, h };
+    prepareContainer(container, opts);
+
+    const {
+      THREE,
+      GLTFLoader,
+      DRACOLoader
+    } = await loadThree(opts.threeVersion);
+
+    let disposed = false;
+    let frameId = null;
+    let resizeObserver = null;
+    let logo = null;
+    let ready = false;
+    let startTime = null;
+
+    const TAU = Math.PI * 2;
+    let speed = TAU * opts.rotationsPerSecond;
+
+    function getSize() {
+      return {
+        w: Math.max(container.clientWidth || 800, 1),
+        h: Math.max(container.clientHeight || Number(opts.height) || 520, 1)
+      };
     }
 
-    let renderer;
-    let scene;
-    let camera;
-    let controls;
-    let animationId = null;
-    let onResize = null;
-    let onHotkeyToggle = null;
+    const size0 = getSize();
+
+    const renderer = new THREE.WebGLRenderer({
+      antialias: !!opts.antialias,
+      alpha: !!opts.alpha,
+      powerPreference: "high-performance",
+      preserveDrawingBuffer: !!opts.preserveDrawingBuffer,
+      depth: true,
+      stencil: false,
+      desynchronized: true
+    });
+
+    renderer.setPixelRatio(Math.min(global.devicePixelRatio || 1, opts.maxPixelRatio));
+    renderer.setSize(size0.w, size0.h, false);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.setClearColor(0x000000, 0);
+
+    renderer.domElement.style.width = "100%";
+    renderer.domElement.style.height = "100%";
+    renderer.domElement.style.display = "block";
+    renderer.domElement.style.position = "absolute";
+    renderer.domElement.style.left = "0";
+    renderer.domElement.style.top = "0";
+    renderer.domElement.style.zIndex = "1";
+    renderer.domElement.style.transform = "translate3d(0,0,0)";
+    renderer.domElement.style.backfaceVisibility = "hidden";
+    renderer.domElement.style.willChange = "transform";
+
+    container.appendChild(renderer.domElement);
+    addBadge(container, opts);
+
+    const scene = new THREE.Scene();
+
+    const camera = new THREE.PerspectiveCamera(
+      opts.cameraFov,
+      size0.w / size0.h,
+      0.01,
+      10000
+    );
+
+    camera.position.set(0, 0, 7);
+    camera.lookAt(0, 0, 0);
+
+    scene.add(new THREE.AmbientLight(0xffffff, opts.ambientIntensity));
+
+    const keyLight = new THREE.DirectionalLight(0xffffff, opts.keyLightIntensity);
+    keyLight.position.set(0, 0, 8);
+    scene.add(keyLight);
+
+    const fillLight1 = new THREE.DirectionalLight(0xffffff, opts.fillLight1Intensity);
+    fillLight1.position.set(4, 3, 5);
+    scene.add(fillLight1);
+
+    const fillLight2 = new THREE.DirectionalLight(0xffffff, opts.fillLight2Intensity);
+    fillLight2.position.set(-4, 2, 4);
+    scene.add(fillLight2);
+
+    const spinGroup = new THREE.Group();
+    scene.add(spinGroup);
+
+    const poseGroup = new THREE.Group();
+    spinGroup.add(poseGroup);
+
+    const loader = new GLTFLoader();
+
+    if (opts.useDraco) {
+      try {
+        const dracoLoader = new DRACOLoader();
+        dracoLoader.setDecoderPath(opts.dracoDecoderPath);
+        loader.setDRACOLoader(dracoLoader);
+      } catch (e) {}
+    }
+
+    function resizeRenderer() {
+      if (disposed) return;
+
+      const s = getSize();
+
+      renderer.setPixelRatio(Math.min(global.devicePixelRatio || 1, opts.maxPixelRatio));
+      renderer.setSize(s.w, s.h, false);
+
+      camera.aspect = s.w / s.h;
+      camera.updateProjectionMatrix();
+
+      renderer.render(scene, camera);
+    }
+
+    function animate(now) {
+      if (disposed) return;
+
+      frameId = requestAnimationFrame(animate);
+
+      if (startTime === null) {
+        startTime = now;
+      }
+
+      if (ready && opts.autoRotate) {
+        const elapsed = (now - startTime) * 0.001;
+        const angle = (elapsed * speed) % TAU;
+        spinGroup.rotation.y = angle;
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    function destroy() {
+      disposed = true;
+
+      if (frameId !== null) {
+        cancelAnimationFrame(frameId);
+        frameId = null;
+      }
+
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+        resizeObserver = null;
+      }
+
+      disposeObject3D(scene);
+
+      try {
+        renderer.dispose();
+      } catch (e) {}
+
+      if (renderer.domElement && renderer.domElement.parentNode) {
+        renderer.domElement.parentNode.removeChild(renderer.domElement);
+      }
+
+      if (container.__glbViewerDestroy === destroy) {
+        delete container.__glbViewerDestroy;
+      }
+    }
+
+    container.__glbViewerDestroy = destroy;
+
+    let arrayBuffer;
 
     try {
-      let { w, h } = getSize(app);
+      arrayBuffer = base64ToArrayBuffer(glbBase64);
+    } catch (e) {
+      showError(container, "No se pudo convertir el GLB base64 a ArrayBuffer.");
+      destroy();
+      throw e;
+    }
 
-      renderer = new THREE.WebGLRenderer({
-        antialias: true,
-        preserveDrawingBuffer: true,
+    let gltf;
+
+    try {
+      gltf = await new Promise((resolve, reject) => {
+        loader.parse(arrayBuffer, "", resolve, reject);
       });
-
-      renderer.setPixelRatio(window.devicePixelRatio || 1);
-      renderer.setSize(w, h, false);
-      renderer.shadowMap.enabled = false;
-      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-
-      renderer.domElement.style.width = "100%";
-      renderer.domElement.style.height = "100%";
-      renderer.domElement.style.position = "absolute";
-      renderer.domElement.style.left = "0";
-      renderer.domElement.style.top = "0";
-      renderer.domElement.style.zIndex = "1";
-
-      app.appendChild(renderer.domElement);
-
-      scene = new THREE.Scene();
-
-      if (THEME.bgCanvas !== null) {
-        scene.background = new THREE.Color(THEME.bgCanvas);
-      }
-
-      const persp = new THREE.PerspectiveCamera(60, w / h, 0.01, 10000);
-      persp.up.set(0, 1, 0);
-
-      const ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 10000);
-      ortho.up.set(0, 1, 0);
-
-      camera = persp;
-
-      controls = new TrackballControls(camera, renderer.domElement);
-      controls.rotateSpeed = 4.0;
-      controls.zoomSpeed = 1.4;
-      controls.panSpeed = 0.8;
-      controls.staticMoving = false;
-      controls.dynamicDampingFactor = 0.15;
-      controls.mouseButtons = {
-        LEFT: THREE.MOUSE.ROTATE,
-        MIDDLE: THREE.MOUSE.ZOOM,
-        RIGHT: THREE.MOUSE.PAN,
-      };
-      controls.target.set(0, 0, 0);
-      controls.update();
-
-      const hemi = new THREE.HemisphereLight(0xffffff, 0xeeeeee, 0.7);
-      scene.add(hemi);
-
-      const dirLight = new THREE.DirectionalLight(0xffffff, 1.05);
-      dirLight.position.set(3, 4, 2);
-      dirLight.castShadow = false;
-      dirLight.shadow.mapSize.width = 2048;
-      dirLight.shadow.mapSize.height = 2048;
-      dirLight.shadow.camera.near = 0.01;
-      dirLight.shadow.camera.far = 10000;
-      dirLight.shadow.bias = -0.0002;
-      scene.add(dirLight);
-
-      const GRID_SIZE = 10;
-
-      const groundGroup = new THREE.Group();
-      scene.add(groundGroup);
-
-      const grid = new THREE.GridHelper(GRID_SIZE, 20, 0x0ea5a6, 0x0ea5a6);
-      grid.visible = false;
-      groundGroup.add(grid);
-
-      const groundMat = new THREE.ShadowMaterial({ opacity: 0.22 });
-      groundMat.transparent = true;
-      groundMat.depthWrite = false;
-
-      const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), groundMat);
-      ground.rotation.x = -Math.PI / 2;
-      ground.position.y = -0.0001;
-      ground.receiveShadow = true;
-      ground.visible = false;
-      groundGroup.add(ground);
-
-      const axesHelper = new THREE.AxesHelper(1);
-      axesHelper.visible = false;
-      scene.add(axesHelper);
-
-      let _lastMaxDim = 1;
-      let boundsInfo = null;
-      let model = null;
-
-      function applySizeToCamera() {
-        const s = getSize(app);
-        w = s.w;
-        h = s.h;
-
-        if (camera.isPerspectiveCamera) {
-          camera.aspect = w / h;
-        } else {
-          const span = Math.max(_lastMaxDim, GRID_SIZE * 0.5);
-          const aspect = w / h;
-          camera.left = -span * aspect;
-          camera.right = span * aspect;
-          camera.top = span;
-          camera.bottom = -span;
-        }
-
-        camera.updateProjectionMatrix();
-      }
-
-      function sizeAxesHelper(maxDim) {
-        axesHelper.scale.setScalar(maxDim * 0.75);
-        axesHelper.position.set(0, 0, 0);
-      }
-
-      let secEnabled = false;
-      let secAxis = "X";
-      let secPlaneVisible = false;
-      let secVisual = null;
-
-      function clearSectionClipping() {
-        if (!model) return;
-
-        model.traverse((obj) => {
-          if (!obj.isMesh) return;
-
-          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-
-          mats.forEach((m) => {
-            if (!m) return;
-            m.clippingPlanes = null;
-            m.needsUpdate = true;
-          });
-        });
-      }
-
-      function applySectionPlaneToModel(plane) {
-        if (!model) return;
-
-        model.traverse((obj) => {
-          if (!obj.isMesh) return;
-
-          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-
-          mats.forEach((m) => {
-            if (!m) return;
-            m.clippingPlanes = [plane];
-            m.needsUpdate = true;
-          });
-        });
-      }
-
-      function ensureSectionVisual() {
-        if (!secVisual) {
-          const geom = new THREE.BoxGeometry(1, 1, 1);
-
-          const mat = new THREE.MeshBasicMaterial({
-            color: THEME.teal,
-            transparent: true,
-            opacity: 0.16,
-            depthWrite: false,
-            depthTest: false,
-            toneMapped: false,
-            side: THREE.DoubleSide,
-          });
-
-          secVisual = new THREE.Mesh(geom, mat);
-          secVisual.visible = false;
-          secVisual.renderOrder = 9999;
-          scene.add(secVisual);
-        }
-
-        return secVisual;
-      }
-
-      function updateSectionPlane(distNorm) {
-        if (!secEnabled || !model) {
-          renderer.localClippingEnabled = false;
-          clearSectionClipping();
-
-          if (secVisual) secVisual.visible = false;
-
-          return;
-        }
-
-        const n = new THREE.Vector3(
-          secAxis === "X" ? 1 : 0,
-          secAxis === "Y" ? 1 : 0,
-          secAxis === "Z" ? 1 : 0
-        );
-
-        const box = new THREE.Box3().setFromObject(model);
-
-        if (box.isEmpty()) {
-          renderer.localClippingEnabled = false;
-          clearSectionClipping();
-
-          if (secVisual) secVisual.visible = false;
-
-          return;
-        }
-
-        const size = box.getSize(new THREE.Vector3());
-        const maxDim = Math.max(size.x, size.y, size.z) || 1;
-        const dist = distNorm * maxDim * 0.5;
-        const plane = new THREE.Plane(n, -dist);
-
-        renderer.localClippingEnabled = true;
-        clearSectionClipping();
-        applySectionPlaneToModel(plane);
-
-        ensureSectionVisual();
-
-        const thickness = maxDim * 0.004;
-        const dim = maxDim * 1.2;
-
-        const look = n.clone();
-        const up =
-          Math.abs(look.dot(new THREE.Vector3(0, 1, 0))) > 0.999
-            ? new THREE.Vector3(1, 0, 0)
-            : new THREE.Vector3(0, 1, 0);
-
-        const m = new THREE.Matrix4().lookAt(
-          new THREE.Vector3(0, 0, 0),
-          look,
-          up
-        );
-
-        const q = new THREE.Quaternion().setFromRotationMatrix(m);
-
-        secVisual.setRotationFromQuaternion(q);
-        secVisual.scale.set(dim, dim, thickness);
-
-        const p0 = n.clone().multiplyScalar(-plane.constant);
-
-        secVisual.position.copy(p0);
-        secVisual.visible = !!secPlaneVisible;
-      }
-
-      function setRenderMode(mode) {
-        if (!model) return;
-
-        model.traverse((obj) => {
-          if (!obj.isMesh) return;
-
-          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-
-          mats.forEach((m) => {
-            if (!m) return;
-
-            m.wireframe = false;
-            m.transparent = false;
-            m.opacity = 1.0;
-            m.depthWrite = true;
-            m.depthTest = true;
-
-            if (mode === "Wireframe") {
-              m.wireframe = true;
-            } else if (mode === "X-Ray") {
-              m.transparent = true;
-              m.opacity = 0.25;
-              m.depthWrite = false;
-            } else if (mode === "Ghost") {
-              m.transparent = true;
-              m.opacity = 0.6;
-              m.depthWrite = false;
-            }
-
-            m.needsUpdate = true;
-          });
-        });
-      }
-
-      function centerAndFrame(pad = 1.12) {
-        if (!model) return;
-
-        const box = new THREE.Box3().setFromObject(model);
-        if (box.isEmpty()) return;
-
-        const center = box.getCenter(new THREE.Vector3());
-        const size = box.getSize(new THREE.Vector3());
-
-        model.position.sub(center);
-
-        const sphere = new THREE.Sphere();
-        box.getBoundingSphere(sphere);
-
-        const radius = Math.max(1e-8, sphere.radius) * pad;
-
-        _lastMaxDim = Math.max(size.x, size.y, size.z) * pad;
-
-        const s = getSize(app);
-        const aspect = s.w / s.h;
-
-        dirLight.shadow.camera.left = -_lastMaxDim * 2;
-        dirLight.shadow.camera.right = _lastMaxDim * 2;
-        dirLight.shadow.camera.top = _lastMaxDim * 2;
-        dirLight.shadow.camera.bottom = -_lastMaxDim * 2;
-        dirLight.shadow.camera.updateProjectionMatrix();
-
-        if (camera.isPerspectiveCamera) {
-          const vFOV = THREE.MathUtils.degToRad(camera.fov);
-          const hFOV = 2 * Math.atan(Math.tan(vFOV / 2) * aspect);
-
-          const distV = radius / Math.sin(Math.max(1e-6, vFOV / 2));
-          const distH = radius / Math.sin(Math.max(1e-6, hFOV / 2));
-          const dist = Math.max(distV, distH) * 1.02;
-
-          camera.near = Math.max(radius / 1000, 0.001);
-          camera.far = Math.max(radius * 1500, 1500);
-          camera.updateProjectionMatrix();
-
-          const dir = new THREE.Vector3(1, 1, 1).normalize();
-          camera.position.copy(dir.multiplyScalar(dist));
-        } else {
-          const span = Math.max(radius, GRID_SIZE * 0.5);
-
-          camera.left = -span * aspect;
-          camera.right = span * aspect;
-          camera.top = span;
-          camera.bottom = -span;
-          camera.updateProjectionMatrix();
-
-          camera.position.set(span, span, span);
-        }
-
-        controls.target.set(0, 0, 0);
-        controls.update();
-
-        sizeAxesHelper(_lastMaxDim);
-
-        boundsInfo = {
-          center: new THREE.Vector3(0, 0, 0),
-          radius,
-          maxDim: _lastMaxDim,
-        };
-      }
-
-      function setModelScaleToFitGrid() {
-        if (!model) return;
-
-        const box = new THREE.Box3().setFromObject(model);
-        if (box.isEmpty()) return;
-
-        const size = box.getSize(new THREE.Vector3());
-        const maxDim = Math.max(size.x, size.y, size.z) || 1;
-        const target = GRID_SIZE * 0.1;
-        const scale = target / maxDim;
-
-        if (scale > 0 && isFinite(scale)) {
-          model.scale.setScalar(scale);
-        }
-      }
-
-      const easeInOutCubic = (t) =>
-        t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-
-      function viewEndPose(kind) {
-        if (!boundsInfo) return null;
-
-        const target = boundsInfo.center.clone();
-        const pad = 1.18;
-
-        const s = getSize(app);
-        const aspect = s.w / s.h;
-        const effectiveRadius = boundsInfo.radius * pad;
-
-        let r;
-
-        if (camera.isPerspectiveCamera) {
-          const vFOV = THREE.MathUtils.degToRad(camera.fov);
-          const hFOV = 2 * Math.atan(Math.tan(vFOV / 2) * aspect);
-
-          const distV = effectiveRadius / Math.sin(Math.max(1e-6, vFOV / 2));
-          const distH = effectiveRadius / Math.sin(Math.max(1e-6, hFOV / 2));
-
-          r = Math.max(distV, distH);
-        } else {
-          const span = Math.max(effectiveRadius, GRID_SIZE * 0.5);
-
-          camera.left = -span * aspect;
-          camera.right = span * aspect;
-          camera.top = span;
-          camera.bottom = -span;
-          camera.updateProjectionMatrix();
-
-          r = span * 2.6;
-        }
-
-        let dir = new THREE.Vector3(1, 1, 1);
-
-        if (kind === "front") dir.set(0, 0, 1);
-        if (kind === "right") dir.set(1, 0, 0);
-        if (kind === "top") dir.set(0.001, 1, 0).normalize();
-
-        dir.normalize();
-
-        const pos = target.clone().add(dir.multiplyScalar(r));
-
-        return { pos, target };
-      }
-
-      function tweenCameraToPose(endPos, endTarget, duration = 750) {
-        const startPos = camera.position.clone();
-        const startTarget = controls.target.clone();
-        const t0 = performance.now();
-
-        camera.up.set(0, 1, 0);
-
-        function anim() {
-          const now = performance.now();
-          const t = Math.min(1, (now - t0) / duration);
-          const k = easeInOutCubic(t);
-
-          camera.position.lerpVectors(startPos, endPos, k);
-          controls.target.lerpVectors(startTarget, endTarget, k);
-          camera.lookAt(controls.target);
-          controls.update();
-
-          if (t < 1) requestAnimationFrame(anim);
-        }
-
-        requestAnimationFrame(anim);
-      }
-
-      function viewIso() {
-        const v = viewEndPose("iso");
-        if (v) tweenCameraToPose(v.pos, v.target, 750);
-      }
-
-      function viewFront() {
-        const v = viewEndPose("front");
-        if (v) tweenCameraToPose(v.pos, v.target, 750);
-      }
-
-      function viewRight() {
-        const v = viewEndPose("right");
-        if (v) tweenCameraToPose(v.pos, v.target, 750);
-      }
-
-      function viewTop() {
-        const v = viewEndPose("top");
-        if (v) tweenCameraToPose(v.pos, v.target, 900);
-      }
-
-      const stepBytes = base64ToUint8Array(stepBase64);
-      const occt = await occtimportjs();
-      const result = occt.ReadStepFile(stepBytes, null);
-
-      if (!result || !result.success || !result.meshes || !result.meshes.length) {
-        showError(host, "No se pudo leer el archivo STEP desde base64.");
-        return null;
-      }
-
-      model = new THREE.Group();
-
-      const defaultMat = new THREE.MeshStandardMaterial({
-        color: 0xcccccc,
-        metalness: 0.2,
-        roughness: 0.7,
-      });
-
-      for (const m of result.meshes) {
-        if (!m.attributes || !m.attributes.position || !m.index) continue;
-
-        const geom = new THREE.BufferGeometry();
-
-        geom.setAttribute(
-          "position",
-          new THREE.Float32BufferAttribute(m.attributes.position.array, 3)
-        );
-
-        geom.setIndex(m.index.array);
-        geom.computeVertexNormals();
-
-        let mat = defaultMat;
-
-        if (m.color && m.color.length === 3) {
-          mat = new THREE.MeshStandardMaterial({
-            color: new THREE.Color(
-              m.color[0] / 255,
-              m.color[1] / 255,
-              m.color[2] / 255
-            ),
-            metalness: 0.2,
-            roughness: 0.7,
-          });
-        }
-
-        const mesh = new THREE.Mesh(geom, mat);
-
-        mesh.castShadow = false;
-        mesh.receiveShadow = false;
-
-        model.add(mesh);
-      }
-
-      if (!model.children.length) {
-        showError(host, "El STEP fue leído, pero el modelo quedó vacío.");
-        return null;
-      }
-
-      scene.add(model);
-
-      applySizeToCamera();
-      setModelScaleToFitGrid();
-      centerAndFrame(1.12);
-      setRenderMode("Solid");
-
-      if (showInterfaces) {
-        const ui = document.createElement("div");
-        ui.className = "am-ui-root";
-
-        const toolsToggle = document.createElement("button");
-        toolsToggle.className = "am-tools-toggle am-btn";
-        toolsToggle.textContent = "Open Tools";
-
-        const dock = document.createElement("div");
-        dock.className = "am-panel am-dock";
-
-        const dockHeader = document.createElement("div");
-        dockHeader.className = "am-hdr";
-
-        const hdrLeft = document.createElement("div");
-        hdrLeft.className = "am-hdr-left";
-        hdrLeft.textContent = "Viewer Tools";
-
-        const hdrRight = document.createElement("div");
-        hdrRight.className = "am-hdr-right";
-
-        const snapBtn = document.createElement("button");
-        snapBtn.className = "am-btn";
-        snapBtn.style.padding = "6px 12px";
-        snapBtn.style.borderRadius = "999px";
-        snapBtn.textContent = "Snapshot";
-
-        hdrRight.appendChild(snapBtn);
-        dockHeader.appendChild(hdrLeft);
-        dockHeader.appendChild(hdrRight);
-
-        const body = document.createElement("div");
-        body.style.padding = "10px 12px";
-
-        function row(label, child) {
-          const r = document.createElement("div");
-          r.className = "am-row";
-
-          const l = document.createElement("div");
-          l.className = "am-lbl";
-          l.textContent = label;
-
-          r.appendChild(l);
-          r.appendChild(child);
-
-          return r;
-        }
-
-        function mkSelect(opts, val) {
-          const s = document.createElement("select");
-
-          opts.forEach((o) => {
-            const op = document.createElement("option");
-            op.value = o;
-            op.textContent = o;
-            s.appendChild(op);
-          });
-
-          s.value = val;
-
-          return s;
-        }
-
-        function mkSlider(min, max, step, val) {
-          const s = document.createElement("input");
-
-          s.type = "range";
-          s.min = min;
-          s.max = max;
-          s.step = step;
-          s.value = val;
-
-          return s;
-        }
-
-        function mkToggle(label, init = false) {
-          const wrap = document.createElement("label");
-
-          wrap.style.display = "flex";
-          wrap.style.gap = "8px";
-          wrap.style.alignItems = "center";
-          wrap.style.cursor = "pointer";
-
-          const cb = document.createElement("input");
-
-          cb.type = "checkbox";
-          cb.checked = init;
-          cb.style.accentColor = "#0ea5a6";
-
-          const sp = document.createElement("span");
-
-          sp.textContent = label;
-          sp.style.fontWeight = "700";
-          sp.style.color = "#0b3b3c";
-
-          wrap.appendChild(cb);
-          wrap.appendChild(sp);
-
-          return { wrap, cb };
-        }
-
-        const renderModeSel = mkSelect(["Solid", "Wireframe", "X-Ray", "Ghost"], "Solid");
-        const axisSel = mkSelect(["X", "Y", "Z"], "X");
-        const secDist = mkSlider(-1, 1, 0.001, 0);
-        const secToggle = mkToggle("Enable section", false);
-        const secPlaneToggle = mkToggle("Show slice plane", false);
-
-        const viewsRow = document.createElement("div");
-
-        Object.assign(viewsRow.style, {
-          display: "grid",
-          gridTemplateColumns: "repeat(4,1fr)",
-          gap: "8px",
-          margin: "8px 0",
-        });
-
-        const bIso = document.createElement("button");
-        const bTop = document.createElement("button");
-        const bFront = document.createElement("button");
-        const bRight = document.createElement("button");
-
-        [bIso, bTop, bFront, bRight].forEach((b) => {
-          b.className = "am-btn";
-          b.style.padding = "8px";
-          b.style.borderRadius = "10px";
-          viewsRow.appendChild(b);
-        });
-
-        bIso.textContent = "Iso";
-        bTop.textContent = "Top";
-        bFront.textContent = "Front";
-        bRight.textContent = "Right";
-
-        const projSel = mkSelect(["Perspective", "Orthographic"], "Perspective");
-
-        const togGrid = mkToggle("Grid", false);
-        const togGround = mkToggle("Ground & shadows", false);
-        const togAxes = mkToggle("XYZ axes", false);
-
-        body.appendChild(row("Render mode", renderModeSel));
-        body.appendChild(row("Section axis", axisSel));
-        body.appendChild(row("Section dist", secDist));
-        body.appendChild(row("", secToggle.wrap));
-        body.appendChild(row("", secPlaneToggle.wrap));
-        body.appendChild(row("Views", viewsRow));
-        body.appendChild(row("Projection", projSel));
-        body.appendChild(row("", togGrid.wrap));
-        body.appendChild(row("", togGround.wrap));
-        body.appendChild(row("", togAxes.wrap));
-
-        dock.appendChild(dockHeader);
-        dock.appendChild(body);
-
-        ui.appendChild(dock);
-        ui.appendChild(toolsToggle);
-
-        app.appendChild(ui);
-
-        let dockOpen = false;
-
-        function setDock(open) {
-          dockOpen = !!open;
-
-          if (dockOpen) {
-            dock.classList.add("open");
-            toolsToggle.textContent = "Close Tools";
-          } else {
-            dock.classList.remove("open");
-            toolsToggle.textContent = "Open Tools";
-          }
-        }
-
-        setDock(false);
-
-        toolsToggle.addEventListener("click", () => {
-          playClick();
-          setDock(!dockOpen);
-        });
-
-        onHotkeyToggle = function (e) {
-          const tag = ((e.target && e.target.tagName) || "").toLowerCase();
-
-          if (
-            tag === "input" ||
-            tag === "textarea" ||
-            tag === "select" ||
-            e.isComposing
-          ) {
-            return;
-          }
-
-          if (e.key === "t" || e.key === "T" || e.key === "c" || e.key === "C") {
-            e.preventDefault();
-            playClick();
-            setDock(!dockOpen);
-          }
-        };
-
-        document.addEventListener("keydown", onHotkeyToggle, true);
-
-        snapBtn.addEventListener("click", () => {
-          playClick();
-
-          try {
-            const url = renderer.domElement.toDataURL("image/png");
-            const a = document.createElement("a");
-
-            a.href = url;
-            a.download = "step_snapshot.png";
-            a.click();
-          } catch (e) {}
-        });
-
-        renderModeSel.addEventListener("change", () => {
-          playClick();
-          setRenderMode(renderModeSel.value);
-        });
-
-        axisSel.addEventListener("change", () => {
-          playClick();
-          secAxis = axisSel.value;
-          updateSectionPlane(parseFloat(secDist.value) || 0);
-        });
-
-        secDist.addEventListener("input", () => {
-          updateSectionPlane(parseFloat(secDist.value) || 0);
-        });
-
-        secToggle.cb.addEventListener("change", () => {
-          playClick();
-          secEnabled = !!secToggle.cb.checked;
-          updateSectionPlane(parseFloat(secDist.value) || 0);
-        });
-
-        secPlaneToggle.cb.addEventListener("change", () => {
-          playClick();
-          secPlaneVisible = !!secPlaneToggle.cb.checked;
-          updateSectionPlane(parseFloat(secDist.value) || 0);
-        });
-
-        bIso.addEventListener("click", () => {
-          playClick();
-          viewIso();
-        });
-
-        bTop.addEventListener("click", () => {
-          playClick();
-          viewTop();
-        });
-
-        bFront.addEventListener("click", () => {
-          playClick();
-          viewFront();
-        });
-
-        bRight.addEventListener("click", () => {
-          playClick();
-          viewRight();
-        });
-
-        projSel.addEventListener("change", () => {
-          playClick();
-
-          const wasSectionEnabled = secEnabled;
-
-          if (secEnabled) {
-            secEnabled = false;
-            updateSectionPlane(parseFloat(secDist.value) || 0);
-          }
-
-          if (!boundsInfo) {
-            camera = projSel.value === "Perspective" ? persp : ortho;
-            controls.object = camera;
-            controls.update();
-            applySizeToCamera();
-            return;
-          }
-
-          const s = getSize(app);
-          const aspect = s.w / s.h;
-          const span = Math.max(boundsInfo.maxDim, GRID_SIZE * 0.5);
-          const target = boundsInfo.center.clone();
-
-          if (projSel.value === "Orthographic" && camera.isPerspectiveCamera) {
-            const dir = camera.position.clone().sub(target).normalize();
-            const distance = Math.max(span * 2, 1);
-
-            ortho.left = -span * aspect;
-            ortho.right = span * aspect;
-            ortho.top = span;
-            ortho.bottom = -span;
-
-            ortho.position.copy(target).add(dir.multiplyScalar(distance));
-            ortho.up.copy(camera.up);
-            ortho.lookAt(target);
-            ortho.updateProjectionMatrix();
-
-            camera = ortho;
-            controls.object = ortho;
-          } else if (
-            projSel.value === "Perspective" &&
-            camera.isOrthographicCamera
-          ) {
-            const dir = camera.position.clone().sub(target).normalize();
-            const distance = Math.max(span * 3, 1);
-
-            persp.aspect = aspect;
-            persp.fov = 60;
-            persp.near = 0.01;
-            persp.far = 10000;
-
-            persp.position.copy(target).add(dir.multiplyScalar(distance));
-            persp.up.copy(camera.up);
-            persp.lookAt(target);
-            persp.updateProjectionMatrix();
-
-            camera = persp;
-            controls.object = persp;
-          }
-
-          controls.target.copy(target);
-          controls.update();
-          applySizeToCamera();
-
-          if (wasSectionEnabled) {
-            setTimeout(() => {
-              secEnabled = true;
-              secToggle.cb.checked = true;
-              updateSectionPlane(parseFloat(secDist.value) || 0);
-            }, 100);
-          }
-        });
-
-        togGrid.cb.addEventListener("change", () => {
-          playClick();
-          grid.visible = !!togGrid.cb.checked;
-        });
-
-        togGround.cb.addEventListener("change", () => {
-          playClick();
-
-          const on = !!togGround.cb.checked;
-
-          ground.visible = on;
-          renderer.shadowMap.enabled = on;
-          dirLight.castShadow = on;
-
-          if (model) {
-            model.traverse((n) => {
-              if (n.isMesh) {
-                n.castShadow = on;
-                n.receiveShadow = on;
-              }
-            });
-          }
-
-          renderer.render(scene, camera);
-        });
-
-        togAxes.cb.addEventListener("change", () => {
-          playClick();
-
-          axesHelper.visible = !!togAxes.cb.checked;
-
-          if (axesHelper.visible) {
-            sizeAxesHelper(_lastMaxDim);
-          }
-        });
-      }
-
-      onResize = function () {
-        const s = getSize(app);
-
-        renderer.setSize(s.w, s.h, false);
-        applySizeToCamera();
-        renderer.render(scene, camera);
-      };
-
-      window.addEventListener("resize", onResize);
-
-      function animate() {
-        animationId = requestAnimationFrame(animate);
-        controls.update();
-        renderer.render(scene, camera);
-      }
-
-      animate();
-
-      return {
-        dispose: function () {
-          try {
-            cancelAnimationFrame(animationId);
-
-            if (onResize) {
-              window.removeEventListener("resize", onResize);
-            }
-
-            if (onHotkeyToggle) {
-              document.removeEventListener("keydown", onHotkeyToggle, true);
-            }
-
-            controls.dispose();
-            renderer.dispose();
-            host.innerHTML = "";
-          } catch (e) {}
-        },
-      };
     } catch (e) {
       console.error(e);
-      showError(host, "Error renderizando el modelo STEP.");
-      return null;
+      showError(container, "No se pudo leer el archivo GLB desde base64.");
+      destroy();
+      throw e;
     }
+
+    logo = gltf.scene;
+
+    if (!logo) {
+      showError(container, "El GLB fue leído, pero no contiene escena 3D.");
+      destroy();
+      throw new Error("GLB sin escena 3D.");
+    }
+
+    logo.traverse((obj) => {
+      if (!obj.isMesh) return;
+
+      obj.castShadow = false;
+      obj.receiveShadow = false;
+      obj.frustumCulled = false;
+
+      if (obj.geometry) {
+        if (!obj.geometry.attributes.normal) {
+          obj.geometry.computeVertexNormals();
+        }
+
+        obj.geometry.computeBoundingBox();
+        obj.geometry.computeBoundingSphere();
+      }
+
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+
+      mats.forEach((m) => {
+        if (!m) return;
+
+        m.needsUpdate = true;
+
+        if ("flatShading" in m) {
+          m.flatShading = false;
+        }
+
+        if ("toneMapped" in m) {
+          m.toneMapped = true;
+        }
+      });
+    });
+
+    poseGroup.add(logo);
+
+    logo.rotation.set(
+      opts.frontFaceRotX,
+      opts.frontFaceRotY,
+      opts.frontFaceRotZ
+    );
+
+    let box = new THREE.Box3().setFromObject(logo);
+
+    if (box.isEmpty()) {
+      showError(container, "No se pudo calcular el bounding box del GLB.");
+      destroy();
+      throw new Error("Bounding box vacío.");
+    }
+
+    let center = box.getCenter(new THREE.Vector3());
+    let modelSize = box.getSize(new THREE.Vector3());
+    let maxDim = Math.max(modelSize.x, modelSize.y, modelSize.z) || 1;
+
+    logo.position.sub(center);
+
+    const scale = opts.targetModelSize / maxDim;
+    logo.scale.setScalar(scale);
+
+    box = new THREE.Box3().setFromObject(logo);
+    center = box.getCenter(new THREE.Vector3());
+    logo.position.sub(center);
+
+    box = new THREE.Box3().setFromObject(poseGroup);
+
+    const sphere = new THREE.Sphere();
+    box.getBoundingSphere(sphere);
+
+    const radius = Math.max(sphere.radius, 1e-6);
+    const fov = THREE.MathUtils.degToRad(camera.fov);
+    const dist = radius / Math.sin(fov / 2) * opts.fitPadding;
+
+    camera.position.set(0, 0, dist);
+    camera.lookAt(0, 0, 0);
+    camera.near = Math.max(radius / 1000, 0.001);
+    camera.far = Math.max(radius * 1000, 1000);
+    camera.updateProjectionMatrix();
+
+    spinGroup.rotation.set(0, 0, 0);
+    spinGroup.position.set(0, 0, 0);
+    poseGroup.position.set(0, 0, 0);
+
+    ready = true;
+
+    resizeObserver = new ResizeObserver(() => {
+      requestAnimationFrame(resizeRenderer);
+    });
+
+    resizeObserver.observe(container);
+
+    frameId = requestAnimationFrame(animate);
+
+    return {
+      destroy,
+
+      renderer,
+      scene,
+      camera,
+      container,
+
+      setSpeed(rotationsPerSecond) {
+        speed = TAU * Number(rotationsPerSecond || 0);
+      },
+
+      setAutoRotate(value) {
+        opts.autoRotate = !!value;
+      },
+
+      setRotationY(radians) {
+        spinGroup.rotation.y = Number(radians || 0);
+        renderer.render(scene, camera);
+      },
+
+      getObject() {
+        return logo;
+      },
+
+      getSpinGroup() {
+        return spinGroup;
+      },
+
+      resize() {
+        resizeRenderer();
+      }
+    };
   }
 
-  window.renderStepBase64Viewer = renderStepBase64Viewer;
-
-  window.AutoMindStepViewer = {
-    renderStepBase64Viewer,
-  };
-})();
+  global.renderGlbBase64Viewer = renderGlbBase64Viewer;
+})(window);
