@@ -1,63 +1,36 @@
-// ============================================================
-// AutoMindCloud - GLB Base64 Viewer
-// Funcion global para jsDelivr:
-// window.renderGlbBase64Viewer(glbBase64, options)
-// ============================================================
-
 (function (global) {
   "use strict";
 
   const DEFAULTS = {
     container: null,
-
     height: 520,
     background: "transparent",
     borderRadius: "14px",
-
-    // Logo inferior derecho
     showBadge: true,
     badgeUrl: "https://raw.githubusercontent.com/artemioadaysolvers/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud2.png",
     badgeWidthPx: 180,
     badgeRightPx: 14,
     badgeBottomPx: 14,
     badgeOpacity: 0.95,
-
-    // Orientacion base del GLB
-    frontFaceRotX: -1.57079632679, // -pi/2
-    frontFaceRotY: 3.14159265359,  // pi
+    frontFaceRotX: -1.57079632679,
+    frontFaceRotY: 3.14159265359,
     frontFaceRotZ: 0.0,
-
-    // Giro
     autoRotate: true,
     rotationsPerSecond: 0.045,
-
-    // Tamaño visual
     targetModelSize: 3.2,
     fitPadding: 1.18,
-
-    // Performance
     maxPixelRatio: 1.0,
     antialias: true,
     preserveDrawingBuffer: false,
-
-    // Render
     alpha: true,
     clearContainer: true,
-
-    // Camara
     cameraFov: 32,
-
-    // Luces
     ambientIntensity: 1.35,
     keyLightIntensity: 1.25,
     fillLight1Intensity: 0.35,
     fillLight2Intensity: 0.25,
-
-    // Draco
     useDraco: true,
     dracoDecoderPath: "https://www.gstatic.com/draco/v1/decoders/",
-
-    // Three.js
     threeVersion: "0.181.0"
   };
 
@@ -71,10 +44,7 @@
     if (!container) return null;
 
     if (typeof container === "string") {
-      return (
-        document.querySelector(container) ||
-        document.getElementById(container.replace(/^#/, ""))
-      );
+      return document.querySelector(container) || document.getElementById(container.replace(/^#/, ""));
     }
 
     if (container instanceof HTMLElement) {
@@ -135,14 +105,14 @@
   async function loadThree(version) {
     if (!threePromise) {
       threePromise = Promise.all([
-        import(`https://esm.sh/three@${version}`),
-        import(`https://esm.sh/three@${version}/examples/jsm/loaders/GLTFLoader.js?deps=three@${version}`),
-        import(`https://esm.sh/three@${version}/examples/jsm/loaders/DRACOLoader.js?deps=three@${version}`)
-      ]).then(([THREE, gltfModule, dracoModule]) => {
+        import("https://esm.sh/three@" + version),
+        import("https://esm.sh/three@" + version + "/examples/jsm/loaders/GLTFLoader.js?deps=three@" + version),
+        import("https://esm.sh/three@" + version + "/examples/jsm/loaders/DRACOLoader.js?deps=three@" + version)
+      ]).then(function (mods) {
         return {
-          THREE,
-          GLTFLoader: gltfModule.GLTFLoader,
-          DRACOLoader: dracoModule.DRACOLoader
+          THREE: mods[0],
+          GLTFLoader: mods[1].GLTFLoader,
+          DRACOLoader: mods[2].DRACOLoader
         };
       });
     }
@@ -184,14 +154,13 @@
     badge.style.display = "block";
 
     container.appendChild(badge);
-
     return badge;
   }
 
   function disposeObject3D(root) {
     if (!root) return;
 
-    root.traverse((obj) => {
+    root.traverse(function (obj) {
       if (obj.geometry) {
         obj.geometry.dispose();
       }
@@ -199,7 +168,7 @@
       if (obj.material) {
         const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
 
-        materials.forEach((mat) => {
+        materials.forEach(function (mat) {
           if (!mat) return;
 
           for (const key in mat) {
@@ -223,9 +192,7 @@
     const container = resolveContainer(opts.container || opts.element || opts.target || opts.containerId);
 
     if (!container) {
-      throw new Error(
-        "renderGlbBase64Viewer: debes pasar options.container como selector, id o elemento HTML."
-      );
+      throw new Error("renderGlbBase64Viewer: debes pasar options.container como selector, id o elemento HTML.");
     }
 
     if (!glbBase64 || typeof glbBase64 !== "string") {
@@ -241,11 +208,10 @@
 
     prepareContainer(container, opts);
 
-    const {
-      THREE,
-      GLTFLoader,
-      DRACOLoader
-    } = await loadThree(opts.threeVersion);
+    const loaded = await loadThree(opts.threeVersion);
+    const THREE = loaded.THREE;
+    const GLTFLoader = loaded.GLTFLoader;
+    const DRACOLoader = loaded.DRACOLoader;
 
     let disposed = false;
     let frameId = null;
@@ -412,7 +378,7 @@
     let gltf;
 
     try {
-      gltf = await new Promise((resolve, reject) => {
+      gltf = await new Promise(function (resolve, reject) {
         loader.parse(arrayBuffer, "", resolve, reject);
       });
     } catch (e) {
@@ -430,7 +396,7 @@
       throw new Error("GLB sin escena 3D.");
     }
 
-    logo.traverse((obj) => {
+    logo.traverse(function (obj) {
       if (!obj.isMesh) return;
 
       obj.castShadow = false;
@@ -448,7 +414,7 @@
 
       const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
 
-      mats.forEach((m) => {
+      mats.forEach(function (m) {
         if (!m) return;
 
         m.needsUpdate = true;
@@ -513,7 +479,7 @@
 
     ready = true;
 
-    resizeObserver = new ResizeObserver(() => {
+    resizeObserver = new ResizeObserver(function () {
       requestAnimationFrame(resizeRenderer);
     });
 
@@ -522,35 +488,34 @@
     frameId = requestAnimationFrame(animate);
 
     return {
-      destroy,
+      destroy: destroy,
+      renderer: renderer,
+      scene: scene,
+      camera: camera,
+      container: container,
 
-      renderer,
-      scene,
-      camera,
-      container,
-
-      setSpeed(rotationsPerSecond) {
+      setSpeed: function (rotationsPerSecond) {
         speed = TAU * Number(rotationsPerSecond || 0);
       },
 
-      setAutoRotate(value) {
+      setAutoRotate: function (value) {
         opts.autoRotate = !!value;
       },
 
-      setRotationY(radians) {
+      setRotationY: function (radians) {
         spinGroup.rotation.y = Number(radians || 0);
         renderer.render(scene, camera);
       },
 
-      getObject() {
+      getObject: function () {
         return logo;
       },
 
-      getSpinGroup() {
+      getSpinGroup: function () {
         return spinGroup;
       },
 
-      resize() {
+      resize: function () {
         resizeRenderer();
       }
     };
