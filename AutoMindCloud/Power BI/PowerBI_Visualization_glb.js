@@ -6,38 +6,49 @@
     height: 520,
     background: "transparent",
     borderRadius: "14px",
+
     showBadge: true,
     badgeUrl: "https://raw.githubusercontent.com/artemioadaysolvers/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud2.png",
     badgeWidthPx: 180,
     badgeRightPx: 14,
     badgeBottomPx: 14,
     badgeOpacity: 0.95,
+
     frontFaceRotX: -1.57079632679,
     frontFaceRotY: 3.14159265359,
     frontFaceRotZ: 0.0,
+
     autoRotate: true,
     rotationsPerSecond: 0.045,
+
     targetModelSize: 3.2,
     fitPadding: 1.18,
+
     maxPixelRatio: 1.0,
     antialias: true,
-    preserveDrawingBuffer: false,
-    alpha: true,
-    clearContainer: true,
-    cameraFov: 32,
-    ambientIntensity: 1.35,
-    keyLightIntensity: 1.25,
-    fillLight1Intensity: 0.35,
-    fillLight2Intensity: 0.25,
-    useDraco: true,
-    dracoDecoderPath: "https://www.gstatic.com/draco/v1/decoders/",
+
     threeVersion: "0.181.0"
   };
 
-  let threePromise = null;
+  let depsPromise = null;
 
-  function mergeOptions(options) {
-    return Object.assign({}, DEFAULTS, options || {});
+  function cleanBase64(b64) {
+    b64 = String(b64 || "").trim();
+    return b64.includes(",") ? b64.split(",").pop() : b64;
+  }
+
+  function base64ToArrayBuffer(b64) {
+    b64 = cleanBase64(b64);
+
+    const bin = atob(b64);
+    const len = bin.length;
+    const bytes = new Uint8Array(len);
+
+    for (let i = 0; i < len; i++) {
+      bytes[i] = bin.charCodeAt(i);
+    }
+
+    return bytes.buffer;
   }
 
   function resolveContainer(container) {
@@ -54,57 +65,33 @@
     return null;
   }
 
-  function cssSize(value) {
-    if (typeof value === "number") return value + "px";
-    if (typeof value === "string") return value;
-    return "520px";
-  }
-
-  function cleanBase64(b64) {
-    b64 = String(b64 || "").trim();
-    return b64.includes(",") ? b64.split(",").pop() : b64;
-  }
-
-  function base64ToArrayBuffer(b64) {
-    b64 = cleanBase64(b64);
-
-    const binary = atob(b64);
-    const len = binary.length;
-    const bytes = new Uint8Array(len);
-
-    for (let i = 0; i < len; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-
-    return bytes.buffer;
-  }
-
   function showError(container, msg) {
     container.innerHTML = "";
 
     const box = document.createElement("div");
-    box.style.width = "100%";
-    box.style.height = "100%";
-    box.style.display = "flex";
-    box.style.alignItems = "center";
-    box.style.justifyContent = "center";
-    box.style.padding = "16px";
-    box.style.boxSizing = "border-box";
-    box.style.fontFamily = "Arial, sans-serif";
-    box.style.color = "#991b1b";
-    box.style.background = "#fff1f2";
-    box.style.border = "1px solid #fecdd3";
-    box.style.borderRadius = "14px";
-    box.style.fontWeight = "700";
-    box.style.textAlign = "center";
+    box.style.cssText = `
+      width:100%;
+      height:100%;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      box-sizing:border-box;
+      padding:16px;
+      font-family:Arial,sans-serif;
+      color:#991b1b;
+      background:#fff1f2;
+      border:1px solid #fecdd3;
+      border-radius:14px;
+      font-weight:700;
+      text-align:center;
+    `;
     box.textContent = msg;
-
     container.appendChild(box);
   }
 
-  async function loadThree(version) {
-    if (!threePromise) {
-      threePromise = Promise.all([
+  async function loadDependencies(version) {
+    if (!depsPromise) {
+      depsPromise = Promise.all([
         import("https://esm.sh/three@" + version),
         import("https://esm.sh/three@" + version + "/examples/jsm/loaders/GLTFLoader.js?deps=three@" + version),
         import("https://esm.sh/three@" + version + "/examples/jsm/loaders/DRACOLoader.js?deps=three@" + version)
@@ -117,25 +104,11 @@
       });
     }
 
-    return threePromise;
-  }
-
-  function prepareContainer(container, options) {
-    if (options.clearContainer) {
-      container.innerHTML = "";
-    }
-
-    container.style.width = container.style.width || "100%";
-    container.style.height = cssSize(options.height);
-    container.style.position = "relative";
-    container.style.overflow = "hidden";
-    container.style.background = options.background;
-    container.style.borderRadius = options.borderRadius;
-    container.style.contain = "layout paint size";
+    return depsPromise;
   }
 
   function addBadge(container, options) {
-    if (!options.showBadge || !options.badgeUrl) return null;
+    if (!options.showBadge) return;
 
     const badge = document.createElement("img");
     badge.src = options.badgeUrl;
@@ -154,50 +127,25 @@
     badge.style.display = "block";
 
     container.appendChild(badge);
-    return badge;
-  }
-
-  function disposeObject3D(root) {
-    if (!root) return;
-
-    root.traverse(function (obj) {
-      if (obj.geometry) {
-        obj.geometry.dispose();
-      }
-
-      if (obj.material) {
-        const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
-
-        materials.forEach(function (mat) {
-          if (!mat) return;
-
-          for (const key in mat) {
-            const value = mat[key];
-
-            if (value && typeof value === "object" && typeof value.dispose === "function") {
-              value.dispose();
-            }
-          }
-
-          if (typeof mat.dispose === "function") {
-            mat.dispose();
-          }
-        });
-      }
-    });
   }
 
   async function renderGlbBase64Viewer(glbBase64, options) {
-    const opts = mergeOptions(options);
-    const container = resolveContainer(opts.container || opts.element || opts.target || opts.containerId);
+    options = Object.assign({}, DEFAULTS, options || {});
+
+    const container = resolveContainer(
+      options.container ||
+      options.element ||
+      options.target ||
+      options.containerId
+    );
 
     if (!container) {
-      throw new Error("renderGlbBase64Viewer: debes pasar options.container como selector, id o elemento HTML.");
+      throw new Error("Debes pasar options.container.");
     }
 
-    if (!glbBase64 || typeof glbBase64 !== "string") {
-      showError(container, "No se recibió un GLB en base64.");
-      throw new Error("renderGlbBase64Viewer: glbBase64 vacío o inválido.");
+    if (!glbBase64) {
+      showError(container, "No se recibió GLB base64.");
+      return null;
     }
 
     if (container.__glbViewerDestroy) {
@@ -206,66 +154,56 @@
       } catch (e) {}
     }
 
-    prepareContainer(container, opts);
+    container.innerHTML = "";
+    container.style.width = "100%";
+    container.style.height = typeof options.height === "number" ? options.height + "px" : options.height;
+    container.style.position = "relative";
+    container.style.overflow = "hidden";
+    container.style.background = options.background;
+    container.style.borderRadius = options.borderRadius;
+    container.style.contain = "layout paint size";
 
-    const loaded = await loadThree(opts.threeVersion);
-    const THREE = loaded.THREE;
-    const GLTFLoader = loaded.GLTFLoader;
-    const DRACOLoader = loaded.DRACOLoader;
+    const deps = await loadDependencies(options.threeVersion);
+    const THREE = deps.THREE;
+    const GLTFLoader = deps.GLTFLoader;
+    const DRACOLoader = deps.DRACOLoader;
 
-    let disposed = false;
-    let frameId = null;
-    let resizeObserver = null;
-    let logo = null;
-    let ready = false;
-    let startTime = null;
-
-    const TAU = Math.PI * 2;
-    let speed = TAU * opts.rotationsPerSecond;
-
-    function getSize() {
-      return {
-        w: Math.max(container.clientWidth || 800, 1),
-        h: Math.max(container.clientHeight || Number(opts.height) || 520, 1)
-      };
-    }
-
-    const size0 = getSize();
+    const size = {
+      w: Math.max(container.clientWidth || 800, 1),
+      h: Math.max(container.clientHeight || Number(options.height) || 520, 1)
+    };
 
     const renderer = new THREE.WebGLRenderer({
-      antialias: !!opts.antialias,
-      alpha: !!opts.alpha,
+      antialias: !!options.antialias,
+      alpha: true,
       powerPreference: "high-performance",
-      preserveDrawingBuffer: !!opts.preserveDrawingBuffer,
+      preserveDrawingBuffer: false,
       depth: true,
       stencil: false,
       desynchronized: true
     });
 
-    renderer.setPixelRatio(Math.min(global.devicePixelRatio || 1, opts.maxPixelRatio));
-    renderer.setSize(size0.w, size0.h, false);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, options.maxPixelRatio));
+    renderer.setSize(size.w, size.h, false);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.setClearColor(0x000000, 0);
 
-    renderer.domElement.style.width = "100%";
-    renderer.domElement.style.height = "100%";
-    renderer.domElement.style.display = "block";
     renderer.domElement.style.position = "absolute";
     renderer.domElement.style.left = "0";
     renderer.domElement.style.top = "0";
+    renderer.domElement.style.width = "100%";
+    renderer.domElement.style.height = "100%";
+    renderer.domElement.style.display = "block";
     renderer.domElement.style.zIndex = "1";
-    renderer.domElement.style.transform = "translate3d(0,0,0)";
-    renderer.domElement.style.backfaceVisibility = "hidden";
-    renderer.domElement.style.willChange = "transform";
 
     container.appendChild(renderer.domElement);
-    addBadge(container, opts);
+    addBadge(container, options);
 
     const scene = new THREE.Scene();
 
     const camera = new THREE.PerspectiveCamera(
-      opts.cameraFov,
-      size0.w / size0.h,
+      32,
+      size.w / size.h,
       0.01,
       10000
     );
@@ -273,17 +211,17 @@
     camera.position.set(0, 0, 7);
     camera.lookAt(0, 0, 0);
 
-    scene.add(new THREE.AmbientLight(0xffffff, opts.ambientIntensity));
+    scene.add(new THREE.AmbientLight(0xffffff, 1.35));
 
-    const keyLight = new THREE.DirectionalLight(0xffffff, opts.keyLightIntensity);
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.25);
     keyLight.position.set(0, 0, 8);
     scene.add(keyLight);
 
-    const fillLight1 = new THREE.DirectionalLight(0xffffff, opts.fillLight1Intensity);
+    const fillLight1 = new THREE.DirectionalLight(0xffffff, 0.35);
     fillLight1.position.set(4, 3, 5);
     scene.add(fillLight1);
 
-    const fillLight2 = new THREE.DirectionalLight(0xffffff, opts.fillLight2Intensity);
+    const fillLight2 = new THREE.DirectionalLight(0xffffff, 0.25);
     fillLight2.position.set(-4, 2, 4);
     scene.add(fillLight2);
 
@@ -295,85 +233,13 @@
 
     const loader = new GLTFLoader();
 
-    if (opts.useDraco) {
-      try {
-        const dracoLoader = new DRACOLoader();
-        dracoLoader.setDecoderPath(opts.dracoDecoderPath);
-        loader.setDRACOLoader(dracoLoader);
-      } catch (e) {}
-    }
-
-    function resizeRenderer() {
-      if (disposed) return;
-
-      const s = getSize();
-
-      renderer.setPixelRatio(Math.min(global.devicePixelRatio || 1, opts.maxPixelRatio));
-      renderer.setSize(s.w, s.h, false);
-
-      camera.aspect = s.w / s.h;
-      camera.updateProjectionMatrix();
-
-      renderer.render(scene, camera);
-    }
-
-    function animate(now) {
-      if (disposed) return;
-
-      frameId = requestAnimationFrame(animate);
-
-      if (startTime === null) {
-        startTime = now;
-      }
-
-      if (ready && opts.autoRotate) {
-        const elapsed = (now - startTime) * 0.001;
-        const angle = (elapsed * speed) % TAU;
-        spinGroup.rotation.y = angle;
-      }
-
-      renderer.render(scene, camera);
-    }
-
-    function destroy() {
-      disposed = true;
-
-      if (frameId !== null) {
-        cancelAnimationFrame(frameId);
-        frameId = null;
-      }
-
-      if (resizeObserver) {
-        resizeObserver.disconnect();
-        resizeObserver = null;
-      }
-
-      disposeObject3D(scene);
-
-      try {
-        renderer.dispose();
-      } catch (e) {}
-
-      if (renderer.domElement && renderer.domElement.parentNode) {
-        renderer.domElement.parentNode.removeChild(renderer.domElement);
-      }
-
-      if (container.__glbViewerDestroy === destroy) {
-        delete container.__glbViewerDestroy;
-      }
-    }
-
-    container.__glbViewerDestroy = destroy;
-
-    let arrayBuffer;
-
     try {
-      arrayBuffer = base64ToArrayBuffer(glbBase64);
-    } catch (e) {
-      showError(container, "No se pudo convertir el GLB base64 a ArrayBuffer.");
-      destroy();
-      throw e;
-    }
+      const dracoLoader = new DRACOLoader();
+      dracoLoader.setDecoderPath("https://www.gstatic.com/draco/v1/decoders/");
+      loader.setDRACOLoader(dracoLoader);
+    } catch (e) {}
+
+    const arrayBuffer = base64ToArrayBuffer(glbBase64);
 
     let gltf;
 
@@ -384,19 +250,17 @@
     } catch (e) {
       console.error(e);
       showError(container, "No se pudo leer el archivo GLB desde base64.");
-      destroy();
-      throw e;
+      return null;
     }
 
-    logo = gltf.scene;
+    const model = gltf.scene;
 
-    if (!logo) {
+    if (!model) {
       showError(container, "El GLB fue leído, pero no contiene escena 3D.");
-      destroy();
-      throw new Error("GLB sin escena 3D.");
+      return null;
     }
 
-    logo.traverse(function (obj) {
+    model.traverse(function (obj) {
       if (!obj.isMesh) return;
 
       obj.castShadow = false;
@@ -416,47 +280,40 @@
 
       mats.forEach(function (m) {
         if (!m) return;
-
         m.needsUpdate = true;
 
-        if ("flatShading" in m) {
-          m.flatShading = false;
-        }
-
-        if ("toneMapped" in m) {
-          m.toneMapped = true;
-        }
+        if ("flatShading" in m) m.flatShading = false;
+        if ("toneMapped" in m) m.toneMapped = true;
       });
     });
 
-    poseGroup.add(logo);
+    poseGroup.add(model);
 
-    logo.rotation.set(
-      opts.frontFaceRotX,
-      opts.frontFaceRotY,
-      opts.frontFaceRotZ
+    model.rotation.set(
+      options.frontFaceRotX,
+      options.frontFaceRotY,
+      options.frontFaceRotZ
     );
 
-    let box = new THREE.Box3().setFromObject(logo);
+    let box = new THREE.Box3().setFromObject(model);
 
     if (box.isEmpty()) {
       showError(container, "No se pudo calcular el bounding box del GLB.");
-      destroy();
-      throw new Error("Bounding box vacío.");
+      return null;
     }
 
     let center = box.getCenter(new THREE.Vector3());
     let modelSize = box.getSize(new THREE.Vector3());
     let maxDim = Math.max(modelSize.x, modelSize.y, modelSize.z) || 1;
 
-    logo.position.sub(center);
+    model.position.sub(center);
 
-    const scale = opts.targetModelSize / maxDim;
-    logo.scale.setScalar(scale);
+    const scale = options.targetModelSize / maxDim;
+    model.scale.setScalar(scale);
 
-    box = new THREE.Box3().setFromObject(logo);
+    box = new THREE.Box3().setFromObject(model);
     center = box.getCenter(new THREE.Vector3());
-    logo.position.sub(center);
+    model.position.sub(center);
 
     box = new THREE.Box3().setFromObject(poseGroup);
 
@@ -465,7 +322,7 @@
 
     const radius = Math.max(sphere.radius, 1e-6);
     const fov = THREE.MathUtils.degToRad(camera.fov);
-    const dist = radius / Math.sin(fov / 2) * opts.fitPadding;
+    const dist = radius / Math.sin(fov / 2) * options.fitPadding;
 
     camera.position.set(0, 0, dist);
     camera.lookAt(0, 0, 0);
@@ -473,17 +330,71 @@
     camera.far = Math.max(radius * 1000, 1000);
     camera.updateProjectionMatrix();
 
-    spinGroup.rotation.set(0, 0, 0);
-    spinGroup.position.set(0, 0, 0);
-    poseGroup.position.set(0, 0, 0);
+    let disposed = false;
+    let frameId = null;
+    let startTime = null;
+    const TAU = Math.PI * 2;
+    let speed = TAU * options.rotationsPerSecond;
 
-    ready = true;
+    function animate(now) {
+      if (disposed) return;
 
-    resizeObserver = new ResizeObserver(function () {
-      requestAnimationFrame(resizeRenderer);
+      frameId = requestAnimationFrame(animate);
+
+      if (startTime === null) {
+        startTime = now;
+      }
+
+      if (options.autoRotate) {
+        const elapsed = (now - startTime) * 0.001;
+        spinGroup.rotation.y = (elapsed * speed) % TAU;
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    function resize() {
+      if (disposed) return;
+
+      const w = Math.max(container.clientWidth || 800, 1);
+      const h = Math.max(container.clientHeight || Number(options.height) || 520, 1);
+
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, options.maxPixelRatio));
+      renderer.setSize(w, h, false);
+
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+
+      renderer.render(scene, camera);
+    }
+
+    const resizeObserver = new ResizeObserver(function () {
+      requestAnimationFrame(resize);
     });
 
     resizeObserver.observe(container);
+
+    function destroy() {
+      disposed = true;
+
+      if (frameId !== null) {
+        cancelAnimationFrame(frameId);
+      }
+
+      resizeObserver.disconnect();
+
+      try {
+        renderer.dispose();
+      } catch (e) {}
+
+      container.innerHTML = "";
+
+      if (container.__glbViewerDestroy === destroy) {
+        delete container.__glbViewerDestroy;
+      }
+    }
+
+    container.__glbViewerDestroy = destroy;
 
     frameId = requestAnimationFrame(animate);
 
@@ -492,34 +403,20 @@
       renderer: renderer,
       scene: scene,
       camera: camera,
-      container: container,
-
+      model: model,
+      spinGroup: spinGroup,
+      resize: resize,
       setSpeed: function (rotationsPerSecond) {
         speed = TAU * Number(rotationsPerSecond || 0);
       },
-
       setAutoRotate: function (value) {
-        opts.autoRotate = !!value;
-      },
-
-      setRotationY: function (radians) {
-        spinGroup.rotation.y = Number(radians || 0);
-        renderer.render(scene, camera);
-      },
-
-      getObject: function () {
-        return logo;
-      },
-
-      getSpinGroup: function () {
-        return spinGroup;
-      },
-
-      resize: function () {
-        resizeRenderer();
+        options.autoRotate = !!value;
       }
     };
   }
 
   global.renderGlbBase64Viewer = renderGlbBase64Viewer;
+  global.AutoMindGlbViewer = {
+    renderGlbBase64Viewer: renderGlbBase64Viewer
+  };
 })(window);
