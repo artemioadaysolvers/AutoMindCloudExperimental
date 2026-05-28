@@ -1,4 +1,4 @@
-```html
+html
 <p align="center">
   <img width="900" alt="AutoMind Logo"
        src="https://github.com/user-attachments/assets/227cc897-5e0d-4bcc-8683-e76f21472ea5" />
@@ -110,4 +110,4 @@
   <img width="650" alt="DXF Visualization"
        src="https://github.com/user-attachments/assets/8b279d39-5bdb-4545-8081-274ea3af9219" />
 </p>
-```
+
