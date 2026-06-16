@@ -47,16 +47,6 @@
 
 ---
 
-**Heat Transfer by Convection**  
-➡️ [Open in Colab](https://colab.research.google.com/drive/1g95LonNxeMBTITWCpZgncDFi58bPi0lk?usp=sharing)
-
-<p align="center">
-  <img width="750" alt="Convection"
-       src="https://github.com/user-attachments/assets/f9eba9e3-83c2-43a1-a401-02bb4bac8778" />
-</p>
-
----
-
 **Electromagnetism**  
 ➡️ [Open in Colab](https://colab.research.google.com/drive/1hJzAv6H5JG4P9kzMewav-Ne3ZhjSPm31)
 
