@@ -89,7 +89,8 @@
 
 <p align="center">
   <img width="900" alt="URDF Render"
-       src="https://github.com/user-attachments/assets/e603c2d2-48d1-4405-b705-22e3ae0fb178" />
+       src="https://github.com/user-attachments/assets/31a08744-f263-4da6-a28b-26d656393c7d"
+" />
 </p>
 
 ---
