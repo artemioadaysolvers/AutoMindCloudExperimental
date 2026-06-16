@@ -481,11 +481,11 @@ def URDF_Visualization(
     </div>
   </div>
 
-  <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/STLLoader.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/ColladaLoader.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/umd/URDFLoader.js"></script>
+  <script defer src="https://unpkg.com/three@0.132.2/build/three.min.js"></script>
+  <script defer src="https://unpkg.com/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
+  <script defer src="https://unpkg.com/three@0.132.2/examples/js/loaders/STLLoader.js"></script>
+  <script defer src="https://unpkg.com/three@0.132.2/examples/js/loaders/ColladaLoader.js"></script>
+  <script defer src="https://unpkg.com/urdf-loader@0.12.6/umd/URDFLoader.js"></script>
 
   <script type="module">
     // ==========================================================
