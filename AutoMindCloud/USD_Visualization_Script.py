@@ -11,7 +11,7 @@
 #   - Embebe el USD como texto y las texturas como base64.
 #   - Renderiza un HTML fullscreen tipo AutoMindCloudExperimental.
 #   - Mantiene el badge de AutoMind abajo a la derecha.
-# #   - IA_Widgets=False: no se manda nada a API.
+#   - IA_Widgets=False: no se manda nada a API.
 #   - IA_Widgets=True: registra describe_component_images para thumbnails USD.
 
 import os
@@ -209,9 +209,90 @@ def _find_usd_file(folder_path: str):
     return candidates[0][1] if candidates else None
 
 
-def _collect_asset_db(folder_path: str, usd_path: str):
+_WHITE_PIXEL_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+    "AAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+)
+
+
+def _clean_asset_ref(ref: str) -> str:
+    s = str(ref or "").strip()
+    if (s.startswith("@") and s.endswith("@")) or (s.startswith("\"") and s.endswith("\"")):
+        s = s[1:-1]
+    s = s.replace("\\", "/")
+    s = re.sub(r"^file:/+", "", s, flags=re.I)
+    s = re.sub(r"^package:/+", "", s, flags=re.I)
+    s = re.sub(r"^\./", "", s)
+    s = s.lstrip("/")
+    return s
+
+
+def _asset_key_variants(path: str):
+    raw = _clean_asset_ref(path)
+    if not raw:
+        return []
+
+    parts = [x for x in raw.split("/") if x]
+    base = os.path.basename(raw)
+    out = set()
+
+    def add(x):
+        x = _clean_asset_ref(x)
+        if not x:
+            return
+        out.add(x)
+        out.add(x.lower())
+        out.add("./" + x)
+        out.add(("./" + x).lower())
+
+    add(raw)
+    add(base)
+
+    # Suffixes: useful when USD references textures/foo.png but ZIP has model/textures/foo.png.
+    for i in range(len(parts)):
+        add("/".join(parts[i:]))
+
+    # Spacing/underscore variants for CAD exporters.
+    if base:
+        stem, ext = os.path.splitext(base)
+        for b in {
+            base.replace("%20", " "),
+            base.replace(" ", "_"),
+            base.replace("_", " "),
+            stem.replace(" ", "_") + ext,
+            stem.replace("_", " ") + ext,
+            re.sub(r"[\s_\-]+", "", stem) + ext,
+        }:
+            add(b)
+
+    return list(out)
+
+
+def _extract_usd_texture_refs(usd_raw: str):
+    allowed = r"png|jpg|jpeg|webp|gif|bmp|svg"
+    refs = []
+
+    # USD asset syntax: @textures/albedo.png@
+    refs += re.findall(r"@([^@\r\n]+?\.(?:" + allowed + r"))@", usd_raw or "", flags=re.I)
+
+    # Some exporters put image paths inside quoted strings.
+    refs += re.findall(r"[\"']([^\"'\r\n]+?\.(?:" + allowed + r"))[\"']", usd_raw or "", flags=re.I)
+
+    seen = set()
+    out = []
+    for r in refs:
+        rr = _clean_asset_ref(r)
+        k = rr.lower()
+        if rr and k not in seen:
+            seen.add(k)
+            out.append(rr)
+    return out
+
+
+def _collect_asset_db(folder_path: str, usd_path: str, usd_raw: str = ""):
     allowed = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg")
     root_abs = os.path.abspath(folder_path)
+    usd_dir_abs = os.path.dirname(os.path.abspath(usd_path))
     db = {}
     cache = {}
 
@@ -221,18 +302,44 @@ def _collect_asset_db(folder_path: str, usd_path: str):
                 cache[path] = base64.b64encode(f.read()).decode("ascii")
         return cache[path]
 
+    def add_entry(key, val):
+        for k in _asset_key_variants(key):
+            db.setdefault(k, val)
+
     for root, dirs, files in os.walk(folder_path):
         dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__MACOSX"]
         for name in files:
             if not name.lower().endswith(allowed):
                 continue
-            p = os.path.join(root, name)
-            rel = os.path.relpath(os.path.abspath(p), root_abs).replace("\\", "/")
+
+            p = os.path.abspath(os.path.join(root, name))
             val = b64(p)
-            db[rel] = val
-            db[name] = val
-            db[rel.lower()] = val
-            db[name.lower()] = val
+
+            # Register paths relative to both the extraction root and the USD file folder.
+            # USD texture paths are usually relative to the .usda file, not always the ZIP root.
+            for base_dir in (root_abs, usd_dir_abs):
+                try:
+                    rel = os.path.relpath(p, base_dir).replace("\\", "/")
+                    add_entry(rel, val)
+                except Exception:
+                    pass
+
+            add_entry(name, val)
+
+    # Add a safe 1x1 white placeholder for texture references that are present in USD
+    # but missing from the extracted ZIP. This prevents Three.js from trying to upload
+    # a texture whose image is undefined.
+    missing = []
+    for ref in _extract_usd_texture_refs(usd_raw):
+        if not any(k in db for k in _asset_key_variants(ref)):
+            missing.append(ref)
+            add_entry(ref, _WHITE_PIXEL_PNG_B64)
+
+    if missing:
+        shown = ", ".join(missing[:8])
+        extra = "" if len(missing) <= 8 else f" ... +{len(missing) - 8} más"
+        print(f"[USD] Aviso: {len(missing)} textura(s) referenciada(s) no estaban en el ZIP. Se usó placeholder blanco: {shown}{extra}")
+
     return db
 
 
@@ -272,14 +379,14 @@ def USD_Visualization(
     if not (usd_raw.lstrip().startswith("#usda") or "def Xform" in usd_raw or "Physics" in usd_raw):
         return HTML("<b style='color:red'>El archivo encontrado no parece USD ASCII. Exporta .usda/.usd textual.</b>")
 
-    asset_db = _collect_asset_db(folder_path, usd_path)
+    asset_db = _collect_asset_db(folder_path, usd_path, usd_raw)
     usd_js = _esc_js_template(usd_raw)
     asset_js = json.dumps(asset_db)
     bg_js = "null" if background is None else str(int(background))
     sel_js = json.dumps(select_mode)
     ia_js = "true" if IA_Widgets else "false"
 
-    html = f"""<!doctype html>
+    html = fr"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
@@ -308,6 +415,44 @@ def USD_Visualization(
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
 
   <script type="module">
+    // Colab iframe sandbox warnings are normal. The filter below only hides the
+    // repeated Three.js warning produced by missing/late texture images.
+    const __AutoMindOriginalConsoleWarn = console.warn.bind(console);
+    console.warn = (...args) => {{
+      const msg = String(args?.[0] || '');
+      if (msg.includes('THREE.WebGLRenderer: Texture marked for update but image is undefined')) return;
+      __AutoMindOriginalConsoleWarn(...args);
+    }};
+
+    function installTextureSafetyPatch() {{
+      if (!window.THREE || !THREE.WebGLRenderer || THREE.WebGLRenderer.__AutoMindTextureSafe) return;
+      const slots = ['map','alphaMap','aoMap','bumpMap','normalMap','emissiveMap','roughnessMap','metalnessMap','specularMap','envMap','lightMap','displacementMap'];
+      const originalRender = THREE.WebGLRenderer.prototype.render;
+      THREE.WebGLRenderer.prototype.render = function(scene, camera) {{
+        try {{
+          scene?.traverse?.((obj) => {{
+            if (!obj?.isMesh || !obj.material) return;
+            const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+            for (const mat of mats) {{
+              if (!mat) continue;
+              for (const slot of slots) {{
+                const tex = mat[slot];
+                if (tex && tex.needsUpdate && !tex.image) tex.needsUpdate = false;
+              }}
+            }}
+          }});
+        }} catch (_e) {{}}
+        return originalRender.call(this, scene, camera);
+      }};
+      THREE.WebGLRenderer.__AutoMindTextureSafe = true;
+    }}
+
+    // three.min.js is loaded with defer above. Wait until it exists, then patch once.
+    for (let i = 0; i < 80 && !window.THREE; i++) {{
+      await new Promise(r => setTimeout(r, 25));
+    }}
+    installTextureSafetyPatch();
+
     function applyVHVar() {{
       const viewport = window.visualViewport?.height || window.innerHeight || 600;
       document.documentElement.style.setProperty('--vh', `${{viewport * 0.01}}px`);
@@ -329,18 +474,107 @@ def USD_Visualization(
     if (window.visualViewport) window.visualViewport.addEventListener('resize', () => {{ applyVHVar(); setColabFrameHeight(); }});
     setTimeout(setColabFrameHeight, 60);
 
-    const repo     = {json.dumps(repo)};
-    const branch   = {json.dumps(branch)};
-    const compFile = {json.dumps(compFile)};
+    const RAW_VIEWER_URL = 'https://raw.githubusercontent.com/artemioadaysolvers/AutoMind-USD-Loader/main/USD_Viewer/usd_viewer_main.js';
 
-    async function latestSha() {{
-      try {{
-        const url = 'https://api.github.com/repos/' + repo + '/commits/' + branch + '?_=' + Date.now();
-        const r = await fetch(url, {{ headers: {{ 'Accept': 'application/vnd.github+json' }}, cache: 'no-store' }});
-        if (!r.ok) throw 0;
-        const j = await r.json();
-        return (j.sha || '').slice(0, 7) || branch;
-      }} catch (_e) {{ return branch; }}
+    async function importRawGithubModule(rawUrl) {{
+      // raw.githubusercontent.com entrega el JS con MIME no ideal para import() directo.
+      // Además usd_viewer_main.js usa imports relativos como ./Theme.js.
+      // Por eso este cargador:
+      //   1) descarga cada módulo desde raw GitHub,
+      //   2) reescribe imports relativos a Blob URLs,
+      //   3) importa el módulo raíz desde Blob sin romper ./Theme.js, ./Parser.js, etc.
+      const moduleCache = new Map();
+      const version = Date.now();
+
+      function bust(url) {{
+        return url + (url.includes('?') ? '&' : '?') + 'v=' + version;
+      }}
+
+      function isRelativeSpecifier(spec) {{
+        return typeof spec === 'string' && (spec.startsWith('./') || spec.startsWith('../'));
+      }}
+
+      function collectRelativeSpecifiers(source) {{
+        const specs = new Set();
+        const patterns = [
+          /\b(?:import|export)\s+[^'"]*?\s+from\s*(['"])(\.{{1,2}}\/[^'"]+)\1/g,
+          /\bimport\s*(['"])(\.{{1,2}}\/[^'"]+)\1/g,
+          /\bimport\s*\(\s*(['"])(\.{{1,2}}\/[^'"]+)\1\s*\)/g
+        ];
+
+        for (const re of patterns) {{
+          let m;
+          while ((m = re.exec(source)) !== null) {{
+            if (isRelativeSpecifier(m[2])) specs.add(m[2]);
+          }}
+        }}
+        return [...specs];
+      }}
+
+      function rewriteRelativeSpecifiers(source, replacements) {{
+        source = source.replace(
+          /(\b(?:import|export)\s+[^'"]*?\s+from\s*['"])(\.{{1,2}}\/[^'"]+)(['"])/g,
+          (all, p1, spec, p3) => p1 + (replacements.get(spec) || spec) + p3
+        );
+
+        source = source.replace(
+          /(\bimport\s*['"])(\.{{1,2}}\/[^'"]+)(['"])/g,
+          (all, p1, spec, p3) => p1 + (replacements.get(spec) || spec) + p3
+        );
+
+        source = source.replace(
+          /(\bimport\s*\(\s*['"])(\.{{1,2}}\/[^'"]+)(['"]\s*\))/g,
+          (all, p1, spec, p3) => p1 + (replacements.get(spec) || spec) + p3
+        );
+
+        return source;
+      }}
+
+      async function toBlobModuleUrl(moduleUrl) {{
+        moduleUrl = new URL(moduleUrl, window.location.href).href;
+
+        if (moduleCache.has(moduleUrl)) {{
+          return moduleCache.get(moduleUrl);
+        }}
+
+        const promise = (async () => {{
+          const r = await fetch(bust(moduleUrl), {{ cache: 'no-store' }});
+          if (!r.ok) {{
+            throw new Error('HTTP ' + r.status + ' al cargar ' + moduleUrl);
+          }}
+
+          let source = await r.text();
+          if (!source || !source.trim()) {{
+            throw new Error('Módulo JS vacío desde raw.githubusercontent.com: ' + moduleUrl);
+          }}
+
+          const specs = collectRelativeSpecifiers(source);
+          const replacements = new Map();
+
+          for (const spec of specs) {{
+            const childUrl = new URL(spec, moduleUrl).href;
+            const childBlobUrl = await toBlobModuleUrl(childUrl);
+            replacements.set(spec, childBlobUrl);
+          }}
+
+          source = rewriteRelativeSpecifiers(source, replacements);
+
+          const blob = new Blob([source + '\n//# sourceURL=' + moduleUrl], {{
+            type: 'text/javascript;charset=utf-8'
+          }});
+
+          const blobUrl = URL.createObjectURL(blob);
+          window.__AutoMindUSDViewerBlobURLs = window.__AutoMindUSDViewerBlobURLs || [];
+          window.__AutoMindUSDViewerBlobURLs.push(blobUrl);
+          return blobUrl;
+        }})();
+
+        moduleCache.set(moduleUrl, promise);
+        return promise;
+      }}
+
+      const entryBlobUrl = await toBlobModuleUrl(rawUrl);
+      return await import(entryBlobUrl);
     }}
 
     const SELECT_MODE = {sel_js};
@@ -360,13 +594,10 @@ def USD_Visualization(
 
     let mod = null;
     try {{
-      const sha = await latestSha();
-      const base = 'https://cdn.jsdelivr.net/gh/' + repo + '@' + sha + '/';
-      mod = await import(base + compFile + '?v=' + Date.now());
-      console.debug('[USD] Módulo viewer desde', sha);
-    }} catch (_e) {{
-      console.debug('[USD] Fallback branch', branch);
-      mod = await import('https://cdn.jsdelivr.net/gh/' + repo + '@' + branch + '/' + compFile + '?v=' + Date.now());
+      mod = await importRawGithubModule(RAW_VIEWER_URL);
+      console.debug('[USD] Módulo viewer cargado desde raw.githubusercontent.com con imports relativos reescritos');
+    }} catch (err) {{
+      console.error('[USD] No se pudo cargar usd_viewer_main.js desde raw.githubusercontent.com', err);
     }}
 
     if (!mod || typeof mod.render !== 'function') {{
@@ -394,4 +625,8 @@ def USD_Visualization(
 
 
 def USD_Viewer(*args, **kwargs):
+    return USD_Visualization(*args, **kwargs)
+
+
+def USD_Render(*args, **kwargs):
     return USD_Visualization(*args, **kwargs)
