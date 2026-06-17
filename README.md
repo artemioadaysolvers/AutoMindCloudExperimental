@@ -85,13 +85,25 @@
 
 ---
 
-### 🤖 URDF Render on Colab
+### 🤖 URDF Viewer on Colab
 
 <p align="center">
-  <img width="900" alt="URDF Render"
-       src="https://github.com/user-attachments/assets/31a08744-f263-4da6-a28b-26d656393c7d"
+  <img width="900" alt="URDF Viewer"
+       src="https://github.com/user-attachments/assets/e603c2d2-48d1-4405-b705-22e3ae0fb178"
 " />
 </p>
+
+
+---
+
+### 🤖 USD Viewer on Colab
+
+<p align="center">
+  <img width="900" alt="USD Viewer"
+       src="https://github.com/user-attachments/assets/e603c2d2-48d1-4405-b705-22e3ae0fb178"
+" />
+</p>
+
 
 ---
 
@@ -99,6 +111,6 @@
 
 <p align="center">
   <img width="650" alt="DXF Visualization"
-       src="https://github.com/user-attachments/assets/8b279d39-5bdb-4545-8081-274ea3af9219" />
+       src="[https://github.com/user-attachments/assets/8b279d39-5bdb-4545-8081-274ea3af9219](https://github.com/user-attachments/assets/31a08744-f263-4da6-a28b-26d656393c7d)" />
 </p>
 
