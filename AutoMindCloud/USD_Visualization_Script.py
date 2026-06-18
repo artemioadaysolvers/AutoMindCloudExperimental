@@ -89,9 +89,9 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
         infer_url = api_base + API_INFER_PATH
 
         def _describe_component_images(entries):
-            print("[Colab] describe_component_images: payload recibido")
+            pass
             if not isinstance(entries, (list, tuple)):
-                print("[Colab] Payload inválido.")
+                pass
                 return {}
 
             iso_b64 = None
@@ -106,7 +106,7 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                 if key in ("__robot_iso__", "robot_iso", "__iso__", "robot", "full_robot"):
                     if img_b64 and not iso_b64:
                         iso_b64 = img_b64
-                        print("[Colab] Detectada ISO global del sistema USD.")
+                        pass
                     continue
                 if not img_b64:
                     continue
@@ -119,13 +119,13 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                 components.append({"key": key, "name": name, "index": idx, "image_b64": img_b64})
 
             if not components:
-                print("[Colab] Sin componentes válidos.")
+                pass
                 return {}
 
             components.sort(key=lambda c: c.get("index", 0))
             sequence_names = [c["name"] for c in components]
             sequence_str = ", ".join(sequence_names)
-            print(f"[Colab] Componentes USD para IA: {len(components)}")
+            pass
 
             results = {}
             for comp in components:
@@ -147,11 +147,11 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                 try:
                     r = requests.post(infer_url, json={"text": prompt, "images": images}, timeout=timeout)
                 except Exception as e:
-                    print(f"[Colab] Error conexión API para {key}: {e}")
+                    pass
                     results[key] = ""
                     continue
                 if r.status_code != 200:
-                    print(f"[Colab] API {r.status_code} para {key}: {r.text[:200]}")
+                    pass
                     results[key] = ""
                     continue
                 txt = (r.text or "").strip()
@@ -169,20 +169,20 @@ def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 12
                     pass
                 results[key] = txt or ""
 
-            print(f"[Colab] Descripciones devueltas para {len(results)} componentes.")
+            pass
             try:
                 from google.colab import _message  # type: ignore
                 _message.blocking_request("notebook.save", {})
-                print("[Colab] 💾 Notebook guardado.")
+                pass
             except Exception as e:
-                print(f"[Colab] Aviso: no se pudo guardar auto el notebook: {e}")
+                pass
             return results
 
         output.register_callback("describe_component_images", _describe_component_images)
         _COLAB_CALLBACK_REGISTERED = True
-        print("[Colab] ✅ Callback describe_component_images registrado para USD.")
+        pass
     except Exception as e:
-        print(f"[Colab] (Opcional) No se pudo registrar callback: {e}")
+        pass
 
 
 def _find_usd_file(folder_path: str):
@@ -338,7 +338,7 @@ def _collect_asset_db(folder_path: str, usd_path: str, usd_raw: str = ""):
     if missing:
         shown = ", ".join(missing[:8])
         extra = "" if len(missing) <= 8 else f" ... +{len(missing) - 8} más"
-        print(f"[USD] Aviso: {len(missing)} textura(s) referenciada(s) no estaban en el ZIP. Se usó placeholder blanco: {shown}{extra}")
+        pass
 
     return db
 
@@ -352,6 +352,100 @@ def _esc_js_template(s: str) -> str:
     )
 
 
+
+def _html_error(title: str, detail: str):
+    """Small visible error panel for Colab/Jupyter."""
+    return HTML(f"""
+    <div style="font-family:Inter,Arial,sans-serif;border:1px solid #f3b3b3;background:#fff5f5;color:#7a1111;border-radius:12px;padding:14px;line-height:1.45">
+      <b>{title}</b>
+      <pre style="white-space:pre-wrap;margin:10px 0 0;color:#7a1111;background:#fff;border:1px solid #ffd0d0;border-radius:10px;padding:10px">{detail}</pre>
+    </div>
+    """)
+
+
+def _resolve_latest_commit(repo: str, branch: str = "main", timeout: int = 25):
+    """
+    Resolve the current HEAD commit of repo@branch through GitHub API.
+    This is done in Python, before generating the Colab HTML, so the browser
+    receives an immutable jsDelivr URL pinned to the exact latest SHA.
+    """
+    repo = str(repo or "").strip().strip("/")
+    branch = str(branch or "main").strip()
+    if not repo or "/" not in repo:
+        raise ValueError("repo debe tener formato 'usuario/repositorio'. Ej: artemioadaysolvers/AutoMind-USD-URDF-Loader")
+
+    api_url = f"https://api.github.com/repos/{repo}/commits/{branch}"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "AutoMind-USD-Render-Script",
+    }
+    r = requests.get(api_url, headers=headers, timeout=timeout)
+    if r.status_code != 200:
+        raise RuntimeError(f"No pude resolver el último commit de {repo}@{branch}. HTTP {r.status_code}: {r.text[:500]}")
+
+    data = r.json()
+    sha = data.get("sha") or ""
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", sha):
+        raise RuntimeError(f"GitHub API respondió un SHA inválido para {repo}@{branch}: {sha!r}")
+
+    commit = data.get("commit") or {}
+    message = (commit.get("message") or "").splitlines()[0].strip()
+    html_url = data.get("html_url") or f"https://github.com/{repo}/commit/{sha}"
+    return {
+        "repo": repo,
+        "branch": branch,
+        "sha": sha,
+        "short_sha": sha[:7],
+        "message": message,
+        "html_url": html_url,
+        "api_url": api_url,
+    }
+
+
+def _build_jsdelivr_url(repo: str, sha: str, compFile: str):
+    comp = str(compFile or "").strip().replace("\\", "/").lstrip("/")
+    if not comp:
+        raise ValueError("compFile está vacío. Debe apuntar a USD_Viewer/usd_viewer_main.js")
+    return f"https://cdn.jsdelivr.net/gh/{repo}@{sha}/{comp}"
+
+
+def _probe_modular_viewer_entry(url: str, compFile: str, timeout: int = 35):
+    """
+    Validate that compFile is a JavaScript module, not a standalone HTML file.
+    The Python bridge below expects a module exporting render(opts).
+    """
+    r = requests.get(url, headers={"User-Agent": "AutoMind-USD-Render-Script"}, timeout=timeout)
+    if r.status_code != 200:
+        raise RuntimeError(
+            f"No encontré el viewer modular en el último commit.\n"
+            f"HTTP {r.status_code} al cargar:\n{url}\n\n"
+            f"Ruta compFile usada: {compFile}\n"
+            f"Solución: confirma que exista ese archivo en el último commit."
+        )
+
+    sample = (r.text or "")[:4096]
+    stripped = sample.lstrip().lower()
+    if stripped.startswith("<!doctype") or stripped.startswith("<html") or "<script" in stripped[:1000] and "export function render" not in sample:
+        raise RuntimeError(
+            "La ruta compFile está devolviendo HTML, no un módulo JavaScript.\n\n"
+            f"compFile actual: {compFile}\n"
+            f"URL: {url}\n\n"
+            "Este sistema NO debe cargar USD_GitHub_Drop_Viewer.html.\n"
+            "Debe cargar el sistema modular: USD_Viewer/usd_viewer_main.js\n"
+            "Ese archivo debe exportar render(opts)."
+        )
+
+    # We do not hard-fail if the string is minified or bundled, but we warn.
+    if "render" not in sample and "export" not in sample:
+        pass
+
+    return {
+        "ok": True,
+        "content_type": r.headers.get("content-type", ""),
+        "bytes_sampled": len(sample),
+    }
+
+
 def USD_Visualization(
     folder_path: str = "USDModel",
     select_mode: str = "link",
@@ -361,8 +455,17 @@ def USD_Visualization(
     compFile: str = "USD_Viewer/usd_viewer_main.js",
     api_base: str = API_DEFAULT_BASE,
     IA_Widgets: bool = False,
+    timeout: int = 35,
 ):
-    """Renderiza el AutoMind USD Viewer para Colab."""
+    """
+    Renderiza el AutoMind USD Viewer MODULAR para Colab.
+
+    Importante:
+      - Este script NO carga el HTML standalone.
+      - Carga el último commit del sistema modular:
+        https://cdn.jsdelivr.net/gh/{repo}@{SHA}/{compFile}
+      - compFile debe ser un módulo JS que exporte render(opts).
+    """
     if IA_Widgets:
         _register_colab_callback(api_base=api_base)
 
@@ -379,6 +482,18 @@ def USD_Visualization(
     if not (usd_raw.lstrip().startswith("#usda") or "def Xform" in usd_raw or "Physics" in usd_raw):
         return HTML("<b style='color:red'>El archivo encontrado no parece USD ASCII. Exporta .usda/.usd textual.</b>")
 
+    try:
+        commit = _resolve_latest_commit(repo=repo, branch=branch, timeout=timeout)
+        viewer_url = _build_jsdelivr_url(commit["repo"], commit["sha"], compFile)
+        probe = _probe_modular_viewer_entry(viewer_url, compFile=compFile, timeout=timeout)
+    except Exception as e:
+        return _html_error("Error cargando el sistema modular AutoMind USD", str(e))
+
+    pass
+    pass
+    pass
+    pass
+
     asset_db = _collect_asset_db(folder_path, usd_path, usd_raw)
     usd_js = _esc_js_template(usd_raw)
     asset_js = json.dumps(asset_db)
@@ -386,12 +501,19 @@ def USD_Visualization(
     sel_js = json.dumps(select_mode)
     ia_js = "true" if IA_Widgets else "false"
 
+    viewer_url_js = json.dumps(viewer_url)
+    commit_sha_js = json.dumps(commit["sha"])
+    commit_short_js = json.dumps(commit["short_sha"])
+    commit_msg_js = json.dumps(commit["message"])
+    commit_url_js = json.dumps(commit["html_url"])
+    comp_file_js = json.dumps(compFile)
+
     html = fr"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"/>
-  <title>AutoMind USD Viewer</title>
+  <title>AutoMind USD Modular Viewer</title>
   <style>
     :root {{ --vh: 1vh; }}
     html, body {{ margin:0; padding:0; width:100%; height:100dvh; overflow:hidden; background:#{int(background or 0xFFFFFF):06x}; }}
@@ -415,6 +537,11 @@ def USD_Visualization(
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
 
   <script type="module">
+    const VIEWER_ENTRY_URL = {viewer_url_js};
+    const VIEWER_COMMIT_SHA = {commit_sha_js};
+    const VIEWER_COMMIT_URL = {commit_url_js};
+    const VIEWER_COMP_FILE = {comp_file_js};
+
     // Colab iframe sandbox warnings are normal. The filter below only hides the
     // repeated Three.js warning produced by missing/late texture images.
     const __AutoMindOriginalConsoleWarn = console.warn.bind(console);
@@ -447,8 +574,7 @@ def USD_Visualization(
       THREE.WebGLRenderer.__AutoMindTextureSafe = true;
     }}
 
-    // three.min.js is loaded with defer above. Wait until it exists, then patch once.
-    for (let i = 0; i < 80 && !window.THREE; i++) {{
+    for (let i = 0; i < 100 && !window.THREE; i++) {{
       await new Promise(r => setTimeout(r, 25));
     }}
     installTextureSafetyPatch();
@@ -474,107 +600,24 @@ def USD_Visualization(
     if (window.visualViewport) window.visualViewport.addEventListener('resize', () => {{ applyVHVar(); setColabFrameHeight(); }});
     setTimeout(setColabFrameHeight, 60);
 
-    const RAW_VIEWER_URL = 'https://raw.githubusercontent.com/artemioadaysolvers/AutoMind-USD-URDF-Loader/main/USD_Viewer/usd_viewer_main.js';
-
-    async function importRawGithubModule(rawUrl) {{
-      // raw.githubusercontent.com entrega el JS con MIME no ideal para import() directo.
-      // Además usd_viewer_main.js usa imports relativos como ./Theme.js.
-      // Por eso este cargador:
-      //   1) descarga cada módulo desde raw GitHub,
-      //   2) reescribe imports relativos a Blob URLs,
-      //   3) importa el módulo raíz desde Blob sin romper ./Theme.js, ./Parser.js, etc.
-      const moduleCache = new Map();
-      const version = Date.now();
-
-      function bust(url) {{
-        return url + (url.includes('?') ? '&' : '?') + 'v=' + version;
-      }}
-
-      function isRelativeSpecifier(spec) {{
-        return typeof spec === 'string' && (spec.startsWith('./') || spec.startsWith('../'));
-      }}
-
-      function collectRelativeSpecifiers(source) {{
-        const specs = new Set();
-        const patterns = [
-          /\b(?:import|export)\s+[^'"]*?\s+from\s*(['"])(\.{{1,2}}\/[^'"]+)\1/g,
-          /\bimport\s*(['"])(\.{{1,2}}\/[^'"]+)\1/g,
-          /\bimport\s*\(\s*(['"])(\.{{1,2}}\/[^'"]+)\1\s*\)/g
-        ];
-
-        for (const re of patterns) {{
-          let m;
-          while ((m = re.exec(source)) !== null) {{
-            if (isRelativeSpecifier(m[2])) specs.add(m[2]);
-          }}
-        }}
-        return [...specs];
-      }}
-
-      function rewriteRelativeSpecifiers(source, replacements) {{
-        source = source.replace(
-          /(\b(?:import|export)\s+[^'"]*?\s+from\s*['"])(\.{{1,2}}\/[^'"]+)(['"])/g,
-          (all, p1, spec, p3) => p1 + (replacements.get(spec) || spec) + p3
+    async function importCdnModule(entryUrl) {{
+      // jsDelivr sirve módulos ES con MIME correcto y resuelve imports relativos
+      // automáticamente. No reescribimos imports a Blob porque eso puede corromper
+      // módulos grandes o producir "Invalid or unexpected token" sin línea clara.
+      const url = entryUrl + (entryUrl.includes('?') ? '&' : '?') + 'automind_sha=' + encodeURIComponent(VIEWER_COMMIT_SHA);
+      try {{
+        return await import(url);
+      }} catch (err) {{
+        const msg = err && (err.stack || err.message) ? (err.stack || err.message) : String(err);
+        throw new Error(
+          'Falló import() directo del sistema modular.\n' +
+          'Archivo: ' + VIEWER_COMP_FILE + '\n' +
+          'URL: ' + url + '\n\n' +
+          msg + '\n\n' +
+          'Esto suele indicar que alguno de los .js del commit tiene sintaxis inválida, ' +
+          'o que la ruta apunta a HTML en vez de JS.'
         );
-
-        source = source.replace(
-          /(\bimport\s*['"])(\.{{1,2}}\/[^'"]+)(['"])/g,
-          (all, p1, spec, p3) => p1 + (replacements.get(spec) || spec) + p3
-        );
-
-        source = source.replace(
-          /(\bimport\s*\(\s*['"])(\.{{1,2}}\/[^'"]+)(['"]\s*\))/g,
-          (all, p1, spec, p3) => p1 + (replacements.get(spec) || spec) + p3
-        );
-
-        return source;
       }}
-
-      async function toBlobModuleUrl(moduleUrl) {{
-        moduleUrl = new URL(moduleUrl, window.location.href).href;
-
-        if (moduleCache.has(moduleUrl)) {{
-          return moduleCache.get(moduleUrl);
-        }}
-
-        const promise = (async () => {{
-          const r = await fetch(bust(moduleUrl), {{ cache: 'no-store' }});
-          if (!r.ok) {{
-            throw new Error('HTTP ' + r.status + ' al cargar ' + moduleUrl);
-          }}
-
-          let source = await r.text();
-          if (!source || !source.trim()) {{
-            throw new Error('Módulo JS vacío desde raw.githubusercontent.com: ' + moduleUrl);
-          }}
-
-          const specs = collectRelativeSpecifiers(source);
-          const replacements = new Map();
-
-          for (const spec of specs) {{
-            const childUrl = new URL(spec, moduleUrl).href;
-            const childBlobUrl = await toBlobModuleUrl(childUrl);
-            replacements.set(spec, childBlobUrl);
-          }}
-
-          source = rewriteRelativeSpecifiers(source, replacements);
-
-          const blob = new Blob([source + '\n//# sourceURL=' + moduleUrl], {{
-            type: 'text/javascript;charset=utf-8'
-          }});
-
-          const blobUrl = URL.createObjectURL(blob);
-          window.__AutoMindUSDViewerBlobURLs = window.__AutoMindUSDViewerBlobURLs || [];
-          window.__AutoMindUSDViewerBlobURLs.push(blobUrl);
-          return blobUrl;
-        }})();
-
-        moduleCache.set(moduleUrl, promise);
-        return promise;
-      }}
-
-      const entryBlobUrl = await toBlobModuleUrl(rawUrl);
-      return await import(entryBlobUrl);
     }}
 
     const SELECT_MODE = {sel_js};
@@ -589,21 +632,18 @@ def USD_Visualization(
       background: BACKGROUND,
       pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
       autoResize: true,
-      IA_Widgets: IA_WIDGETS
+      IA_Widgets: IA_WIDGETS,
+      commitSha: VIEWER_COMMIT_SHA,
+      commitUrl: VIEWER_COMMIT_URL
     }};
 
-    let mod = null;
     try {{
-      mod = await importRawGithubModule(RAW_VIEWER_URL);
-      console.debug('[USD] Módulo viewer cargado desde raw.githubusercontent.com con imports relativos reescritos');
-    }} catch (err) {{
-      console.error('[USD] No se pudo cargar usd_viewer_main.js desde raw.githubusercontent.com', err);
-    }}
-
-    if (!mod || typeof mod.render !== 'function') {{
-      console.error('[USD] No se pudo cargar usd_viewer_main.js o falta render()');
-    }} else {{
+      const mod = await importCdnModule(VIEWER_ENTRY_URL);
+      if (!mod || typeof mod.render !== 'function') {{
+        throw new Error('El módulo cargó, pero no exporta render(opts). Archivo: ' + VIEWER_COMP_FILE);
+      }}
       const app = mod.render(opts);
+
       function onResize() {{
         try {{
           if (!app || typeof app.resize !== 'function') return;
@@ -616,7 +656,7 @@ def USD_Visualization(
       if (window.visualViewport) window.visualViewport.addEventListener('resize', onResize);
       setTimeout(() => {{ onResize(); setColabFrameHeight(); }}, 0);
       setTimeout(() => {{ onResize(); setColabFrameHeight(); }}, 500);
-    }}
+    }} catch (_err) {{}}
   </script>
 </body>
 </html>
