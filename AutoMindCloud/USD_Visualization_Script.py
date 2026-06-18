@@ -356,7 +356,7 @@ def USD_Visualization(
     folder_path: str = "USDModel",
     select_mode: str = "link",
     background: int | None = 0xFFFFFF,
-    repo: str = "artemioadaysolvers/AutoMind-USD-Loader",
+    repo: str = "artemioadaysolvers/AutoMind-USD-URDF-Loader",
     branch: str = "main",
     compFile: str = "USD_Viewer/usd_viewer_main.js",
     api_base: str = API_DEFAULT_BASE,
@@ -474,7 +474,7 @@ def USD_Visualization(
     if (window.visualViewport) window.visualViewport.addEventListener('resize', () => {{ applyVHVar(); setColabFrameHeight(); }});
     setTimeout(setColabFrameHeight, 60);
 
-    const RAW_VIEWER_URL = 'https://raw.githubusercontent.com/artemioadaysolvers/AutoMind-USD-Loader/main/USD_Viewer/usd_viewer_main.js';
+    const RAW_VIEWER_URL = 'https://raw.githubusercontent.com/artemioadaysolvers/AutoMind-USD-URDF-Loader/main/USD_Viewer/usd_viewer_main.js';
 
     async function importRawGithubModule(rawUrl) {{
       // raw.githubusercontent.com entrega el JS con MIME no ideal para import() directo.
