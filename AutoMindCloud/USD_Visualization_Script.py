@@ -28,7 +28,7 @@ API_INFER_PATH = "/infer"
 _COLAB_CALLBACK_REGISTERED = False
 
 
-def Download_USD(Drive_Link, Output_Name="USDModel"):
+def Download_Zip(Drive_Link, Output_Name="USDModel"):
     """Descarga un ZIP de Google Drive, lo descomprime y devuelve /content/Output_Name."""
     root_dir = "/content"
     file_id = Drive_Link.split("/d/")[1].split("/")[0]
