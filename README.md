@@ -112,6 +112,6 @@
 
 <p align="center">
   <img width="650" alt="DXF Visualization"
-       src="[https://github.com/user-attachments/assets/8b279d39-5bdb-4545-8081-274ea3af9219](https://github.com/user-attachments/assets/31a08744-f263-4da6-a28b-26d656393c7d)" />
+       src="https://github.com/user-attachments/assets/009282b2-c86f-45f9-96cf-482ea2769711" />
 </p>
 
