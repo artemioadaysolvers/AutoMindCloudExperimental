@@ -25,7 +25,7 @@
 ---
 
 ### 🔧 Features
-- ⚙️ **Automatic Sustitution** (Complement to Sympy)  
+- ⚙️ **Automatic Substitution** (Complement to Sympy)  
 - 🧠 **Calculus Summary with IA**  
 - 🧩 **Whiteboard Integration on Colab**  
 - 🧱 **.STEP / .URDF+ / .USD Viewer on Colab**
