@@ -89,9 +89,10 @@
 
 <p align="center">
   <img width="900" alt="URDF Viewer"
-       src="https://github.com/user-attachments/assets/e603c2d2-48d1-4405-b705-22e3ae0fb178"
+       src="https://github.com/user-attachments/assets/6c47e865-a56b-4a43-9fde-e350df735ab9"
 " />
 </p>
+
 
 
 ---
