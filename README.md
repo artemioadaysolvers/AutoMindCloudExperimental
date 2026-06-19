@@ -28,8 +28,8 @@
 - ⚙️ **Automatic Sustitution** (Complement to Sympy)  
 - 🧠 **Calculus Summary with IA**  
 - 🧩 **Whiteboard Integration on Colab**  
-- 🧱 **.STEP / .URDF+ / .USD Visualization**
-- 📐 **.DXF Visualization**
+- 🧱 **.STEP / .URDF+ / .USD Viewer on Colab**
+- 📐 **.DXF Visualization on Colab**
 
 ---
 
