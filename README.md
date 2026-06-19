@@ -25,11 +25,11 @@
 ---
 
 ### 🔧 Features
-- ⚙️ **Calculus Digitalization & Automation** (Automatic Evaluation complement to Sympy)  
+- ⚙️ **Automatic Sustitution** (Complement to Sympy)  
 - 🧠 **Calculus Summary with IA**  
 - 🧩 **Whiteboard Integration on Colab**  
-- 🧱 **STEP / URDF Visualization**
-- 📐 **DXF Visualization**
+- 🧱 **.STEP / .URDF+ / .USD Visualization**
+- 📐 **.DXF Visualization**
 
 ---
 
@@ -76,7 +76,7 @@
 
 ---
 
-### 🧱 Step Render on Colab
+### 🧱 .STEP Viewer on Colab
 
 <p align="center">
   <img width="900" alt="STEP Render"
@@ -85,7 +85,7 @@
 
 ---
 
-### 🤖 URDF Viewer on Colab
+### 🤖 .URDF Viewer on Colab
 
 <p align="center">
   <img width="900" alt="URDF Viewer"
@@ -96,7 +96,7 @@
 
 ---
 
-### 🤖 USD Viewer on Colab
+### 🤖 .USD Viewer on Colab
 
 <p align="center">
   <img width="900" alt="USD Viewer"
@@ -108,7 +108,7 @@
 
 ---
 
-### 📐 DXF Visualization on Colab
+### 📐 .DXF Viewer on Colab
 
 <p align="center">
   <img width="650" alt="DXF Visualization"
