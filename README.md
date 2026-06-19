@@ -79,7 +79,7 @@
 ### 🧱 Step Render on Colab
 
 <p align="center">
-  <img width="700" alt="STEP Render"
+  <img width="900" alt="STEP Render"
        src="https://github.com/user-attachments/assets/3e8d215d-2081-4aa3-83d1-13ab6dbc6046" />
 </p>
 
@@ -100,9 +100,10 @@
 
 <p align="center">
   <img width="900" alt="USD Viewer"
-       src="https://github.com/user-attachments/assets/e603c2d2-48d1-4405-b705-22e3ae0fb178"
+       src="https://github.com/user-attachments/assets/cbf8b796-7dd9-4779-8f10-49b93433203e"
 " />
 </p>
+
 
 
 ---
