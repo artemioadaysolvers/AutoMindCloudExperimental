@@ -739,374 +739,6 @@ __all__ = [
 # board("numero_123")
 
 
-# =============================================================================
-# FAST BOARD DISCOVERY OVERRIDE (v5)
-# -----------------------------------------------------------------------------
-# IMPORTANT:
-# `get_boards()` must NEVER call `get_ipynb` by default. In notebooks with
-# large visualization outputs, `get_ipynb` transfers the whole notebook and
-# becomes extremely slow. This override asks the browser only for the carrier
-# elements whose ids begin with `amc_persisted_snapshot_`.
-#
-# Metadata-only mode is the default: it returns serial/revision/estimated bytes
-# without transferring any PNG Base64. A Base64 is read only when board(serial)
-# actually opens that particular board.
-# =============================================================================
-
-_FAST_DISCOVERY_VERSION = "5"
-_LAST_FAST_DISCOVERY_ERROR = None
-
-_FRONTEND_BOARD_SCAN_JS = r"""
-(async () => {
-  const TARGET_SERIAL = __AMC_TARGET_SERIAL__;
-  const INCLUDE_PAYLOAD = __AMC_INCLUDE_PAYLOAD__;
-  const PREFIX = 'amc_persisted_snapshot_';
-  const rows = new Map();
-  const seenRoots = new WeakSet();
-
-  function cleanSerial(id) {
-    let serial = String(id || '').slice(PREFIX.length);
-    serial = serial.replace(/^(?:ext_|int_)/, '');
-    return serial.replace(/[^A-Za-z0-9_]+/g, '_') || 'board';
-  }
-
-  function addImage(img) {
-    try {
-      const id = img && img.id ? img.id : '';
-      if (!id.startsWith(PREFIX)) return;
-      const serial = cleanSerial(id);
-      if (TARGET_SERIAL && serial !== TARGET_SERIAL) return;
-      const src = img.getAttribute('src') || img.src || '';
-      if (!src.startsWith('data:image/png;base64,')) return;
-      const revision = Number.parseInt(img.getAttribute('data-amc-revision') || '0', 10) || 0;
-      const bytes = Math.max(0, Math.floor((src.length - 'data:image/png;base64,'.length) * 3 / 4));
-      const candidate = { serial, revision, bytes_png_aprox: bytes };
-      if (INCLUDE_PAYLOAD) candidate.data_url = src;
-
-      const previous = rows.get(serial);
-      // A newer revision always wins. If the revisions are equal, the element
-      // found later in the notebook DOM wins, matching notebook output order.
-      if (!previous || revision >= previous.revision) rows.set(serial, candidate);
-    } catch (_) {}
-  }
-
-  function walk(root) {
-    if (!root || seenRoots.has(root)) return;
-    seenRoots.add(root);
-
-    try {
-      const images = root.querySelectorAll
-        ? root.querySelectorAll('img[id^="amc_persisted_snapshot_"]')
-        : [];
-      for (const image of images) addImage(image);
-    } catch (_) {}
-
-    try {
-      const all = root.querySelectorAll ? root.querySelectorAll('*') : [];
-      for (const node of all) {
-        try {
-          if (node.shadowRoot) walk(node.shadowRoot);
-        } catch (_) {}
-      }
-    } catch (_) {}
-
-    try {
-      const frames = root.querySelectorAll ? root.querySelectorAll('iframe') : [];
-      for (const frame of frames) {
-        try {
-          if (frame.contentDocument) walk(frame.contentDocument);
-        } catch (_) {}
-      }
-    } catch (_) {}
-  }
-
-  // Depending on the Colab version eval_js may run in the main document or
-  // inside an output iframe. Scan every same-origin ancestor document.
-  try { walk(document); } catch (_) {}
-  try { if (window.parent && window.parent !== window) walk(window.parent.document); } catch (_) {}
-  try { if (window.top && window.top !== window) walk(window.top.document); } catch (_) {}
-
-  return JSON.stringify(Array.from(rows.values()));
-})()
-"""
-
-def _fast_scan_js(target_serial="", include_payload=False):
-    """Reads only Board carrier elements already rendered by Colab's frontend."""
-    global _LAST_FAST_DISCOVERY_ERROR
-    _require_colab()
-    try:
-        evaluator = getattr(_colab_output, "eval_js", None)
-        if evaluator is None:
-            raise RuntimeError("google.colab.output.eval_js no está disponible")
-
-        safe_target = _sanitize_serial(target_serial) if target_serial else ""
-        js = _FRONTEND_BOARD_SCAN_JS.replace(
-            "__AMC_TARGET_SERIAL__", json.dumps(safe_target)
-        ).replace(
-            "__AMC_INCLUDE_PAYLOAD__", "true" if include_payload else "false"
-        )
-        raw = evaluator(js)
-        if isinstance(raw, str):
-            raw = json.loads(raw)
-        if not isinstance(raw, list):
-            raw = []
-
-        normalized = []
-        for item in raw:
-            if not isinstance(item, dict):
-                continue
-            serial = _sanitize_serial(item.get("serial"))
-            revision = int(item.get("revision", 0) or 0)
-            bytes_png_aprox = int(item.get("bytes_png_aprox", 0) or 0)
-            record = {
-                "serial": serial,
-                "revision": revision,
-                "bytes_png_aprox": max(0, bytes_png_aprox),
-                "updated_at": 0.0,
-                "source_cell": "frontend",
-                "source_output": "carrier",
-            }
-            data_url = item.get("data_url", "")
-            if include_payload and data_url:
-                prefix = "data:image/png;base64,"
-                if not isinstance(data_url, str) or not data_url.startswith(prefix):
-                    continue
-                png_b64 = data_url[len(prefix):]
-                # Validate only the selected boards/payloads, never all notebook outputs.
-                try:
-                    base64.b64decode(png_b64, validate=True)
-                except Exception:
-                    continue
-                record["png_b64"] = png_b64
-                record["bytes_png_aprox"] = len(png_b64) * 3 // 4
-            normalized.append(record)
-
-        _LAST_FAST_DISCOVERY_ERROR = None
-        return normalized
-    except Exception as exc:
-        _LAST_FAST_DISCOVERY_ERROR = repr(exc)
-        return []
-
-
-def _merge_board_records(recovered, conservar_runtime=True):
-    """Merge metadata loaded from the frontend without discarding live edits."""
-    by_serial = {}
-    for item in recovered or []:
-        if isinstance(item, dict) and item.get("serial"):
-            by_serial[_sanitize_serial(item["serial"])] = dict(item)
-
-    if conservar_runtime:
-        for live in boards_guardados:
-            if not isinstance(live, dict) or not live.get("serial"):
-                continue
-            serial = _sanitize_serial(live["serial"])
-            prior = by_serial.get(serial)
-            live_revision = int(live.get("revision", 0) or 0)
-            prior_revision = int(prior.get("revision", 0) or 0) if prior else -1
-
-            # A live image always wins over metadata with the same/older revision.
-            if live.get("png_b64") and (live.get("updated_at", 0) > 0 or live_revision >= prior_revision):
-                by_serial[serial] = dict(live)
-            elif prior is None:
-                by_serial[serial] = dict(live)
-
-    boards_guardados[:] = list(by_serial.values())
-    return boards_guardados
-
-
-def _legacy_scan_entire_notebook(conservar_runtime=True):
-    """
-    Compatibility-only reader for outputs written by an old notebook when the
-    browser cannot render their carrier nodes. It intentionally scans get_ipynb
-    and is therefore NOT used by get_boards() unless explicitly requested.
-    """
-    global notebook_json
-    nb = _read_notebook_json()
-    recovered = _extract_all_boards_from_notebook(nb)
-    # Do not retain a giant copy of a notebook that may contain 3D outputs.
-    notebook_json = {}
-    return _merge_board_records(recovered, conservar_runtime=conservar_runtime)
-
-
-def recargar_boards_desde_notebook(conservar_runtime: bool = True, modo: str = "rapido"):
-    """
-    Loads Board information only.
-
-    modo="rapido" (default): scans carrier elements in the already-open browser
-    DOM; it does not transfer the notebook JSON.
-    modo="compatibilidad": legacy full get_ipynb scan. Use it only once for an
-    old notebook whose carriers are not currently mounted in the browser DOM.
-    """
-    mode = str(modo or "rapido").strip().lower()
-    if mode in {"compatibilidad", "legacy", "ipynb", "completo"}:
-        return _legacy_scan_entire_notebook(conservar_runtime=conservar_runtime)
-
-    recovered = _fast_scan_js(include_payload=False)
-    return _merge_board_records(recovered, conservar_runtime=conservar_runtime)
-
-
-def _load_one_board_payload(serial: str):
-    """Transfers exactly one PNG Base64: the board being opened."""
-    serial = _sanitize_serial(serial)
-    rows = _fast_scan_js(target_serial=serial, include_payload=True)
-    if not rows:
-        return None
-    # The scanner deduplicates per serial; nevertheless pick max revision.
-    item = max(rows, key=lambda x: int(x.get("revision", 0) or 0))
-    return _upsert_board_record(
-        serial,
-        "data:image/png;base64," + item.get("png_b64", ""),
-        item.get("revision", 0),
-    )
-
-
-def _snapshot_from_notebook(serial: str) -> str:
-    """
-    Fast replacement for the old get_ipynb lookup.
-    It checks the in-memory cache and then reads only the requested carrier from
-    the browser DOM. It never copies the complete .ipynb.
-    """
-    serial = _sanitize_serial(serial)
-    record = _find_board_record(serial)
-    if record and record.get("png_b64"):
-        return "data:image/png;base64," + record["png_b64"]
-
-    record = _load_one_board_payload(serial)
-    if record and record.get("png_b64"):
-        return "data:image/png;base64," + record["png_b64"]
-    return ""
-
-
-def _wait_for_carrier(serial: str, _unused_png_b64=None) -> bool:
-    """
-    Waits only for Board carrier metadata in the frontend DOM. The previous
-    implementation requested the full notebook six times here.
-    """
-    serial = _sanitize_serial(serial)
-    current = _find_board_record(serial)
-    expected_revision = int(current.get("revision", 0) or 0) if current else 0
-    for pause in (0.08, 0.16, 0.30):
-        time.sleep(pause)
-        rows = _fast_scan_js(target_serial=serial, include_payload=False)
-        if rows and int(rows[0].get("revision", 0) or 0) >= expected_revision:
-            return True
-    return False
-
-
-def listar_boards(incluir_base64: bool = False, recargar: bool = False):
-    """
-    Lists boards without reading their PNGs unless incluir_base64=True.
-    """
-    if recargar:
-        recargar_boards_desde_notebook(conservar_runtime=True, modo="rapido")
-
-    if incluir_base64:
-        # This is intentionally opt-in: load every payload only if requested.
-        loaded = _fast_scan_js(include_payload=True)
-        _merge_board_records(loaded, conservar_runtime=True)
-
-    rows = []
-    for item in boards_guardados:
-        b64 = item.get("png_b64", "")
-        estimated = int(item.get("bytes_png_aprox", 0) or 0)
-        if b64:
-            estimated = len(b64) * 3 // 4
-        row = {
-            "serial": item.get("serial"),
-            "bytes_png_aprox": estimated,
-            "revision": item.get("revision", 0),
-            "updated_at": item.get("updated_at", 0),
-            "source_cell": item.get("source_cell", "frontend"),
-            "source_output": item.get("source_output", "carrier"),
-        }
-        if incluir_base64:
-            row["png_b64"] = b64
-        rows.append(row)
-    return rows
-
-
-def get_boards(incluir_base64: bool = False, recargar: bool = True, modo: str = "rapido"):
-    """
-    Fast startup API.
-
-    Default `get_boards()` reads only Board carrier metadata from the browser;
-    it does not call get_ipynb and does not transfer any PNG Base64. A PNG is
-    fetched only when `board("serial")` opens that board.
-
-    Use `get_boards(modo="compatibilidad")` only to migrate an old notebook
-    whose hidden carrier outputs cannot be found in the currently mounted DOM.
-    """
-    global _BOARDS_INITIALIZED
-    _require_colab()
-
-    if recargar or not _BOARDS_INITIALIZED:
-        recargar_boards_desde_notebook(
-            conservar_runtime=True,
-            modo=modo,
-        )
-        _BOARDS_INITIALIZED = True
-
-    return listar_boards(incluir_base64=incluir_base64, recargar=False)
-
-
-def diagnostico_boards():
-    """Fast diagnostics; never serializes the whole notebook."""
-    frontend = _fast_scan_js(include_payload=False)
-    return {
-        "modo_carga_predeterminado": "rapido: DOM de carriers, sin get_ipynb",
-        "version_descubrimiento": _FAST_DISCOVERY_VERSION,
-        "error_ultimo_escaneo_rapido": _LAST_FAST_DISCOVERY_ERROR,
-        "boards_detectados_en_frontend": frontend,
-        "boards_en_runtime": listar_boards(incluir_base64=False, recargar=False),
-        "notebook_json_en_memoria": bool(notebook_json),
-    }
-
-
-def board(serial: str = "board"):
-    """
-    Opens a board. The full Base64 is loaded only for this one requested board.
-    """
-    _require_colab()
-    if not _BOARDS_INITIALIZED:
-        get_boards()
-
-    serial = _sanitize_serial(serial)
-    callback_name = _ensure_callback_registered(serial)
-    png_path = f"/content/pizarra_cell_{serial}.png"
-
-    record = _find_board_record(serial)
-    initial_data_url = (
-        "data:image/png;base64," + record["png_b64"]
-        if record and record.get("png_b64") else ""
-    )
-    if not initial_data_url:
-        # Fast single-board lookup. No full notebook scan.
-        initial_data_url = _snapshot_from_notebook(serial) or _file_to_dataurl(png_path)
-
-    if initial_data_url and (record is None or not record.get("png_b64")):
-        record = _upsert_board_record(serial, initial_data_url, (record or {}).get("revision", 0))
-
-    initial_revision = int((record or {}).get("revision", 0) or 0)
-
-    # Do NOT create a new carrier merely by opening a saved board. The existing
-    # carrier already in the notebook is enough. A carrier is updated only when
-    # the user actually changes the canvas through the persistence callback.
-    html = _render_board_html(serial, initial_data_url, initial_revision, callback_name)
-    _BOARD_HANDLES[serial] = display(HTML(html), display_id=True)
-
-
-# Export the optimized public API.
-__all__ = [
-    "board",
-    "get_boards",
-    "listar_boards",
-    "recargar_boards_desde_notebook",
-    "diagnostico_boards",
-    "boards_guardados",
-    "notebook_json",
-]
-
-
 # Keep persisted revisions stable when a board is merely read from the frontend.
 # The older implementation incremented the revision even during a read, which
 # could make a just-opened board look newer than its saved carrier.
@@ -1154,201 +786,931 @@ def _upsert_board_record(serial: str, data_url_png: str, client_revision=None):
         record.clear()
         record.update(fresh)
     return fresh
+
+
 # =============================================================================
-# DISCOVERY HYBRID OVERRIDE (v6) — CORRECTO DESPUÉS DE RECONECTAR EL RUNTIME
+# SMART BOARD INDEX (v7)
 # -----------------------------------------------------------------------------
-# El escaneo rápido del DOM es útil mientras los outputs están montados, pero
-# Colab virtualiza outputs antiguos después de recargar/reconectar. En ese
-# estado los <img> carrier siguen guardados dentro del .ipynb, aunque no estén
-# presentes en document/window.top, y el escaneo rápido devuelve [].
+# Goal:
+#   * get_boards() never downloads the entire .ipynb in normal use.
+#   * It reads a tiny persisted index (local browser cache / compact manifest).
+#   * A PNG Base64 is fetched only when board("serial") actually opens it.
+#   * get_ipynb remains available only as an explicit recovery path:
+#       get_boards(modo="seguro")
+#     or when a board is explicitly opened from a new browser with no cache.
 #
-# Estrategia:
-#   1. modo="auto" (predeterminado): DOM rápido primero.
-#   2. si el DOM no ve ningún carrier, se usa automáticamente el lector fiable
-#      de exito_board: get_ipynb + extracción exclusiva de los carriers Board.
-#   3. el JSON completo se descarta inmediatamente; en memoria sólo quedan los
-#      datos de los boards. La ruta completa se activa sólo ante ese fallo del
-#      DOM, no en cada guardado ni en cada apertura normal.
+# Why:
+#   A notebook can contain tens of megabytes of 3D, plots and data outputs.
+#   Using get_ipynb merely to discover board names is a brute-force operation.
 # =============================================================================
 
-_FAST_DISCOVERY_VERSION = "6-hybrid-authoritative-fallback"
+_SMART_INDEX_VERSION = "7"
+_SMART_INDEX_ATTR = "data-amc-board-index"
+_SMART_INDEX_ID = "amc_board_manifest_v7"
+_SMART_MANIFEST_HANDLE = None
 _LAST_DISCOVERY_SOURCE = "none"
-_AUTO_LEGACY_FALLBACK_DONE = False
+_LAST_SMART_ERROR = None
+_FULL_NOTEBOOK_READ_THIS_RUNTIME = False
+
+
+def _board_metadata(record):
+    """Return only the light metadata required to list a board."""
+    if not isinstance(record, dict) or not record.get("serial"):
+        return None
+    payload = record.get("png_b64", "")
+    estimated = int(record.get("bytes_png_aprox", 0) or 0)
+    if payload:
+        estimated = len(payload) * 3 // 4
+    return {
+        "serial": _sanitize_serial(record["serial"]),
+        "revision": int(record.get("revision", 0) or 0),
+        "bytes_png_aprox": max(0, estimated),
+        "updated_at": float(record.get("updated_at", 0.0) or 0.0),
+    }
+
+
+def _manifest_rows():
+    rows = []
+    seen = set()
+    for record in boards_guardados:
+        row = _board_metadata(record)
+        if row and row["serial"] not in seen:
+            rows.append(row)
+            seen.add(row["serial"])
+    return sorted(rows, key=lambda item: item["serial"].lower())
+
+
+def _manifest_html():
+    """
+    A compact carrier which contains only names/revisions/byte estimates.
+    It never duplicates any PNG Base64.
+    """
+    payload = {
+        "version": _SMART_INDEX_VERSION,
+        "updated_at": time.time(),
+        "boards": _manifest_rows(),
+    }
+    packed = base64.b64encode(
+        json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).decode("ascii")
+    return (
+        f'<div id="{_SMART_INDEX_ID}" {_SMART_INDEX_ATTR}="1" '
+        f'data-amc-index-b64="{packed}" aria-hidden="true" '
+        'style="position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;'
+        'opacity:0;overflow:hidden;pointer-events:none"></div>'
+    )
+
+
+def _update_manifest_output():
+    """
+    Update a tiny notebook output after each confirmed snapshot.
+    Unlike a full notebook scan, this output is a few hundred bytes.
+    """
+    global _SMART_MANIFEST_HANDLE
+    html = _manifest_html()
+    try:
+        if _SMART_MANIFEST_HANDLE is None:
+            _SMART_MANIFEST_HANDLE = display(HTML(html), display_id=True)
+        else:
+            _SMART_MANIFEST_HANDLE.update(HTML(html))
+        return True
+    except Exception:
+        return False
+
+
+def _safe_json_from_js(value, default):
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except Exception:
+            return default
+    return value if isinstance(value, type(default)) else default
+
+
+_FRONTEND_INDEX_READ_JS = r"""
+(async () => {
+  const INDEX_ATTR = 'data-amc-board-index';
+  const INDEX_ID = 'amc_board_manifest_v7';
+  const PREFIX = 'amc_persisted_snapshot_';
+
+  function windows() {
+    const out = [];
+    const add = (w) => { if (w && !out.includes(w)) out.push(w); };
+    add(window);
+    try { add(window.parent); } catch (_) {}
+    try { add(window.top); } catch (_) {}
+    return out;
+  }
+
+  function notebookIdentity() {
+    for (const w of windows()) {
+      try {
+        const href = String(w.location && w.location.href || '');
+        if (href && href !== 'about:blank') {
+          return href.split('#')[0].split('?')[0];
+        }
+      } catch (_) {}
+    }
+    return 'unknown-notebook';
+  }
+
+  function storageList() {
+    const out = [];
+    for (const w of windows()) {
+      try {
+        const storage = w.localStorage;
+        if (storage && !out.includes(storage)) out.push(storage);
+      } catch (_) {}
+    }
+    return out;
+  }
+
+  const cacheKey = 'amc_board_index_v7:' + notebookIdentity();
+
+  function normalize(rows) {
+    const latest = new Map();
+    for (const raw of (Array.isArray(rows) ? rows : [])) {
+      if (!raw || !raw.serial) continue;
+      const serial = String(raw.serial).replace(/[^A-Za-z0-9_]+/g, '_') || 'board';
+      const row = {
+        serial,
+        revision: Number.parseInt(raw.revision || 0, 10) || 0,
+        bytes_png_aprox: Math.max(0, Number.parseInt(raw.bytes_png_aprox || 0, 10) || 0),
+        updated_at: Number(raw.updated_at || 0) || 0,
+      };
+      const previous = latest.get(serial);
+      if (!previous || row.revision >= previous.revision) latest.set(serial, row);
+    }
+    return Array.from(latest.values()).sort((a,b) => a.serial.localeCompare(b.serial));
+  }
+
+  function decodeManifest(encoded) {
+    try {
+      const json = atob(String(encoded || ''));
+      const parsed = JSON.parse(json);
+      return normalize(parsed && parsed.boards);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  // 1) O(1): browser cache written immediately after a board is saved.
+  for (const storage of storageList()) {
+    try {
+      const raw = storage.getItem(cacheKey);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      const boards = normalize(parsed && parsed.boards);
+      if (boards.length) {
+        return JSON.stringify({source:'browser-index', cache_key:cacheKey, boards});
+      }
+    } catch (_) {}
+  }
+
+  // 2) Small, targeted DOM query. It does NOT walk every DOM node and never
+  // reads a Base64 image. It only checks the compact index/carrier selectors.
+  const roots = [];
+  const addRoot = (doc) => {
+    if (doc && !roots.includes(doc)) roots.push(doc);
+  };
+  for (const w of windows()) {
+    try { addRoot(w.document); } catch (_) {}
+  }
+
+  // Usually notebook output iframes are direct descendants. Limit scanning to
+  // a small number, so a notebook with complex widgets cannot turn this into a
+  // full DOM traversal.
+  for (let i = 0; i < roots.length && roots.length < 48; i++) {
+    const root = roots[i];
+    try {
+      const frames = root.querySelectorAll ? root.querySelectorAll('iframe') : [];
+      for (const frame of frames) {
+        if (roots.length >= 48) break;
+        try { addRoot(frame.contentDocument); } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  for (const root of roots) {
+    try {
+      const node = root.getElementById && root.getElementById(INDEX_ID);
+      const candidates = node
+        ? [node]
+        : (root.querySelectorAll ? root.querySelectorAll('[' + INDEX_ATTR + '][data-amc-index-b64]') : []);
+      for (const item of candidates) {
+        const boards = decodeManifest(item.getAttribute('data-amc-index-b64'));
+        if (boards.length) {
+          return JSON.stringify({source:'manifest-dom', cache_key:cacheKey, boards});
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 3) Metadata-only carrier query for notebooks written by v4/v5/v6.
+  // No image src is returned; bytes are calculated from its already-rendered
+  // length. This is still bounded and selector-based.
+  const carrierRows = [];
+  for (const root of roots) {
+    try {
+      const images = root.querySelectorAll
+        ? root.querySelectorAll('img[id^="' + PREFIX + '"]')
+        : [];
+      for (const image of images) {
+        const id = String(image.id || '');
+        let serial = id.slice(PREFIX.length).replace(/^(?:ext_|int_)/, '');
+        serial = serial.replace(/[^A-Za-z0-9_]+/g, '_') || 'board';
+        const src = image.getAttribute('src') || '';
+        if (!src.startsWith('data:image/png;base64,')) continue;
+        carrierRows.push({
+          serial,
+          revision: Number.parseInt(image.getAttribute('data-amc-revision') || '0', 10) || 0,
+          bytes_png_aprox: Math.max(0, Math.floor((src.length - 22) * 3 / 4)),
+          updated_at: 0,
+        });
+      }
+    } catch (_) {}
+  }
+
+  const boards = normalize(carrierRows);
+  return JSON.stringify({
+    source: boards.length ? 'carrier-dom' : 'no-smart-index',
+    cache_key: cacheKey,
+    boards
+  });
+})()
+"""
+
+
+def _run_smart_js(script):
+    """Execute a very small browser query through Colab's supported eval_js."""
+    global _LAST_SMART_ERROR
+    _require_colab()
+    try:
+        evaluator = getattr(_colab_output, "eval_js", None)
+        if evaluator is None:
+            raise RuntimeError("google.colab.output.eval_js no está disponible")
+        value = evaluator(script)
+        _LAST_SMART_ERROR = None
+        return value
+    except Exception as exc:
+        _LAST_SMART_ERROR = repr(exc)
+        return None
+
+
+def _browser_read_catalog():
+    raw = _run_smart_js(_FRONTEND_INDEX_READ_JS)
+    result = _safe_json_from_js(raw, {})
+    if not isinstance(result, dict):
+        return {"source": "browser-error", "boards": []}
+    boards = result.get("boards", [])
+    if not isinstance(boards, list):
+        boards = []
+    normalized = []
+    for item in boards:
+        if not isinstance(item, dict) or not item.get("serial"):
+            continue
+        normalized.append({
+            "serial": _sanitize_serial(item["serial"]),
+            "revision": int(item.get("revision", 0) or 0),
+            "bytes_png_aprox": max(0, int(item.get("bytes_png_aprox", 0) or 0)),
+            "updated_at": float(item.get("updated_at", 0.0) or 0.0),
+            "source_cell": "smart-index",
+            "source_output": result.get("source", "browser-index"),
+        })
+    return {
+        "source": str(result.get("source", "browser-index")),
+        "cache_key": str(result.get("cache_key", "")),
+        "boards": normalized,
+    }
+
+
+_FRONTEND_INDEX_WRITE_JS = r"""
+(async () => {
+  const rows = __AMC_ROWS_JSON__;
+
+  function windows() {
+    const out = [];
+    const add = (w) => { if (w && !out.includes(w)) out.push(w); };
+    add(window);
+    try { add(window.parent); } catch (_) {}
+    try { add(window.top); } catch (_) {}
+    return out;
+  }
+
+  function notebookIdentity() {
+    for (const w of windows()) {
+      try {
+        const href = String(w.location && w.location.href || '');
+        if (href && href !== 'about:blank') return href.split('#')[0].split('?')[0];
+      } catch (_) {}
+    }
+    return 'unknown-notebook';
+  }
+
+  const cacheKey = 'amc_board_index_v7:' + notebookIdentity();
+  const payload = JSON.stringify({version:'7', updated_at:Date.now()/1000, boards:rows});
+  let written = false;
+  for (const w of windows()) {
+    try {
+      w.localStorage.setItem(cacheKey, payload);
+      written = true;
+    } catch (_) {}
+  }
+  return JSON.stringify({ok:written, cache_key:cacheKey});
+})()
+"""
+
+
+def _browser_write_catalog():
+    """Mirror lightweight metadata in localStorage; never writes PNG Base64."""
+    rows = _manifest_rows()
+    js = _FRONTEND_INDEX_WRITE_JS.replace(
+        "__AMC_ROWS_JSON__", json.dumps(rows, separators=(",", ":"))
+    )
+    return _run_smart_js(js)
+
+
+def _merge_board_records(recovered, conservar_runtime=True):
+    """
+    Merge metadata and full records without replacing a known image with
+    metadata-only information from the smart index.
+    """
+    current = {}
+    if conservar_runtime:
+        for old in boards_guardados:
+            if isinstance(old, dict) and old.get("serial"):
+                current[_sanitize_serial(old["serial"])] = dict(old)
+
+    for incoming in recovered or []:
+        if not isinstance(incoming, dict) or not incoming.get("serial"):
+            continue
+        serial = _sanitize_serial(incoming["serial"])
+        candidate = dict(incoming)
+        candidate["serial"] = serial
+        old = current.get(serial)
+
+        old_revision = int(old.get("revision", 0) or 0) if old else -1
+        new_revision = int(candidate.get("revision", 0) or 0)
+
+        if old and old.get("png_b64") and old_revision >= new_revision:
+            # Existing image is newer/equal; update only its metadata if useful.
+            old["bytes_png_aprox"] = max(
+                int(old.get("bytes_png_aprox", 0) or 0),
+                int(candidate.get("bytes_png_aprox", 0) or 0),
+            )
+            current[serial] = old
+        elif old and old.get("png_b64") and not candidate.get("png_b64"):
+            # A newer metadata row does not contain pixels; preserve old pixels
+            # only when they belong to that exact same revision.
+            if old_revision == new_revision:
+                merged = dict(candidate)
+                merged["png_b64"] = old["png_b64"]
+                current[serial] = merged
+            else:
+                current[serial] = candidate
+        else:
+            current[serial] = candidate
+
+    boards_guardados[:] = [
+        current[key] for key in sorted(current, key=lambda value: value.lower())
+    ]
+    return boards_guardados
+
+
+def _extract_one_board_from_notebook(nb, serial):
+    """
+    Targeted extractor used only if a board is explicitly opened from a browser
+    that has no smart index/cache. It decodes one PNG, not every board.
+    """
+    serial = _sanitize_serial(serial)
+    if not isinstance(nb, dict):
+        return None
+
+    escaped = re.escape(serial)
+    pattern = re.compile(
+        r'<img\b'
+        r'(?=[^>]*\bid=["\']amc_persisted_snapshot_(?:ext_|int_)?' + escaped + r'["\'])'
+        r'(?=[^>]*\bsrc=["\'](?P<src>data:image/png;base64,[^"\']+)["\'])'
+        r'[^>]*>',
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    selected = None
+    for cell_index, cell in enumerate(nb.get("cells", [])):
+        if not isinstance(cell, dict):
+            continue
+        for output_index, output in enumerate(cell.get("outputs", [])):
+            if not isinstance(output, dict):
+                continue
+            data = output.get("data", {}) or {}
+            for mime in ("text/html", "text/plain", "text"):
+                if mime not in data:
+                    continue
+                html = _mime_to_text(data[mime])
+                for match in pattern.finditer(html):
+                    data_url = match.group("src")
+                    try:
+                        png_b64 = data_url.split(",", 1)[1]
+                        base64.b64decode(png_b64, validate=True)
+                    except Exception:
+                        continue
+                    selected = {
+                        "serial": serial,
+                        "png_b64": png_b64,
+                        "bytes_png_aprox": len(png_b64) * 3 // 4,
+                        "revision": 0,
+                        "updated_at": 0.0,
+                        "source_cell": cell_index,
+                        "source_output": output_index,
+                    }
+    return selected
 
 
 def _legacy_scan_entire_notebook(conservar_runtime=True):
-    """Lector autoritativo usado por exito_board; no conserva el .ipynb completo."""
-    global notebook_json, _LAST_DISCOVERY_SOURCE
-    nb = _read_notebook_json()
-    recovered = _extract_all_boards_from_notebook(nb)
-
-    # Evita dejar en RAM un notebook grande con viewers/outputs ajenos.
+    """
+    Explicit recovery/migration path. Never called by default get_boards().
+    It reads the complete notebook only when the caller deliberately asks for
+    modo="seguro"/"compatibilidad".
+    """
+    global notebook_json, _FULL_NOTEBOOK_READ_THIS_RUNTIME, _LAST_DISCOVERY_SOURCE
+    notebook_json = _read_notebook_json()
+    recovered = _extract_all_boards_from_notebook(notebook_json)
     notebook_json = {}
-    _LAST_DISCOVERY_SOURCE = "ipynb"
-    return _merge_board_records(recovered, conservar_runtime=conservar_runtime)
+    _FULL_NOTEBOOK_READ_THIS_RUNTIME = True
+    _LAST_DISCOVERY_SOURCE = "ipynb-explicit"
+    _merge_board_records(recovered, conservar_runtime=conservar_runtime)
+    _update_manifest_output()
+    _browser_write_catalog()
+    return boards_guardados
 
 
-def _legacy_load_one_board_payload(serial: str):
-    """Obtiene un solo board desde el .ipynb cuando su output no está montado."""
+def _legacy_load_one_board_payload(serial):
+    """
+    Last-resort recovery, triggered only by board(serial) when the requested
+    board is absent from cache and the current DOM. It extracts that one PNG.
+    """
     global notebook_json, _LAST_DISCOVERY_SOURCE
     serial = _sanitize_serial(serial)
-    nb = _read_notebook_json()
-    recovered = _extract_all_boards_from_notebook(nb)
+    notebook_json = _read_notebook_json()
+    record = _extract_one_board_from_notebook(notebook_json, serial)
     notebook_json = {}
-    _LAST_DISCOVERY_SOURCE = "ipynb-single-board"
-
-    # Fusionar todos mantiene el catálogo coherente si el fallback ya tuvo que
-    # leer el documento. Sólo se retiene cada PNG de Board, nunca otros outputs.
-    _merge_board_records(recovered, conservar_runtime=True)
+    _LAST_DISCOVERY_SOURCE = "ipynb-single-board-explicit"
+    if record:
+        _merge_board_records([record], conservar_runtime=True)
+        _update_manifest_output()
+        _browser_write_catalog()
     return _find_board_record(serial)
 
 
-def recargar_boards_desde_notebook(conservar_runtime: bool = True, modo: str = "auto"):
-    """
-    Recarga el catálogo de boards.
+_FRONTEND_PAYLOAD_READ_JS = r"""
+(async () => {
+  const SERIAL = __AMC_SERIAL_JSON__;
+  const PREFIX = 'data:image/png;base64,';
 
-    modo="auto" (predeterminado)
-        Escanea el DOM y, si Colab no ha montado los outputs persistidos,
-        cambia automáticamente a la lectura autoritativa del .ipynb.
+  function windows() {
+    const out = [];
+    const add = (w) => { if (w && !out.includes(w)) out.push(w); };
+    add(window);
+    try { add(window.parent); } catch (_) {}
+    try { add(window.top); } catch (_) {}
+    return out;
+  }
 
-    modo="rapido"
-        Sólo DOM. Útil si se necesita evitar por completo get_ipynb, pero puede
-        devolver [] justo después de reconectar debido a la virtualización de
-        outputs de Colab.
+  function notebookIdentity() {
+    for (const w of windows()) {
+      try {
+        const href = String(w.location && w.location.href || '');
+        if (href && href !== 'about:blank') return href.split('#')[0].split('?')[0];
+      } catch (_) {}
+    }
+    return 'unknown-notebook';
+  }
 
-    modo="compatibilidad" / "completo"
-        Fuerza la lectura autoritativa usada por exito_board.
-    """
-    global _AUTO_LEGACY_FALLBACK_DONE, _LAST_DISCOVERY_SOURCE
-    mode = str(modo or "auto").strip().lower()
+  const payloadKey = 'amc_board_payload_v7:' + notebookIdentity() + ':' + SERIAL;
 
-    if mode in {"compatibilidad", "legacy", "ipynb", "completo", "seguro"}:
-        _AUTO_LEGACY_FALLBACK_DONE = True
-        return _legacy_scan_entire_notebook(conservar_runtime=conservar_runtime)
+  // 1) A local payload is available only for boards small enough to remain
+  // inside browser storage. This is fast and avoids reading the notebook.
+  for (const w of windows()) {
+    try {
+      const raw = w.localStorage.getItem(payloadKey);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      const dataUrl = parsed && parsed.data_url;
+      if (typeof dataUrl === 'string' && dataUrl.startsWith(PREFIX)) {
+        return JSON.stringify({source:'browser-payload', data_url:dataUrl,
+          revision:Number(parsed.revision || 0) || 0});
+      }
+    } catch (_) {}
+  }
 
-    recovered = _fast_scan_js(include_payload=False)
-    if recovered:
-        _LAST_DISCOVERY_SOURCE = "frontend"
-        return _merge_board_records(recovered, conservar_runtime=conservar_runtime)
+  // 2) Bounded direct selector for a mounted old/new carrier.
+  const wanted = 'amc_persisted_snapshot_' + SERIAL;
+  const roots = [];
+  const addRoot = (doc) => { if (doc && !roots.includes(doc)) roots.push(doc); };
+  for (const w of windows()) { try { addRoot(w.document); } catch (_) {} }
+  for (let i=0; i<roots.length && roots.length<48; i++) {
+    try {
+      const frames = roots[i].querySelectorAll ? roots[i].querySelectorAll('iframe') : [];
+      for (const frame of frames) {
+        if (roots.length >= 48) break;
+        try { addRoot(frame.contentDocument); } catch (_) {}
+      }
+    } catch (_) {}
+  }
 
-    # Esta es la corrección principal. El resultado vacío del DOM no significa
-    # que no existan boards: puede significar que Colab aún no montó esas celdas.
-    if mode in {"auto", "hibrido", "hybrid"}:
-        _AUTO_LEGACY_FALLBACK_DONE = True
-        return _legacy_scan_entire_notebook(conservar_runtime=conservar_runtime)
+  for (const root of roots) {
+    try {
+      let node = root.getElementById && root.getElementById(wanted);
+      if (!node && root.querySelector) {
+        node = root.querySelector('img[id="amc_persisted_snapshot_ext_' + SERIAL + '"],'
+          + 'img[id="amc_persisted_snapshot_int_' + SERIAL + '"]');
+      }
+      const src = node && (node.getAttribute('src') || node.src || '');
+      if (typeof src === 'string' && src.startsWith(PREFIX)) {
+        return JSON.stringify({source:'carrier-dom', data_url:src,
+          revision:Number.parseInt(node.getAttribute('data-amc-revision') || '0',10) || 0});
+      }
+    } catch (_) {}
+  }
 
-    _LAST_DISCOVERY_SOURCE = "frontend-empty"
-    return _merge_board_records([], conservar_runtime=conservar_runtime)
+  return JSON.stringify({source:'payload-not-cached', data_url:''});
+})()
+"""
 
 
-def _load_one_board_payload(serial: str):
-    """Carga el PNG de un board desde DOM y, si hace falta, desde el .ipynb."""
+def _browser_load_one_payload(serial):
+    """Retrieve exactly one PNG from the browser cache or one mounted carrier."""
     serial = _sanitize_serial(serial)
-    rows = _fast_scan_js(target_serial=serial, include_payload=True)
-    if rows:
-        item = max(rows, key=lambda x: int(x.get("revision", 0) or 0))
-        record = _upsert_board_record(
-            serial,
-            "data:image/png;base64," + item.get("png_b64", ""),
-            item.get("revision", 0),
-        )
-        if record:
-            return record
+    js = _FRONTEND_PAYLOAD_READ_JS.replace("__AMC_SERIAL_JSON__", json.dumps(serial))
+    raw = _run_smart_js(js)
+    result = _safe_json_from_js(raw, {})
+    data_url = result.get("data_url", "") if isinstance(result, dict) else ""
+    if not isinstance(data_url, str) or not data_url.startswith("data:image/png;base64,"):
+        return None
+    record = _upsert_board_record(
+        serial, data_url, int(result.get("revision", 0) or 0)
+    )
+    if record:
+        record["source_cell"] = "smart-index"
+        record["source_output"] = result.get("source", "browser-payload")
+    return record
 
-    # El carrier puede estar guardado pero no montado por el virtualizador de
-    # Colab. Ésta es exactamente la ruta que hacía funcionar exito_board.
-    return _legacy_load_one_board_payload(serial)
 
-
-def _snapshot_from_notebook(serial: str) -> str:
-    """Devuelve un PNG guardado sin asumir que el carrier esté visible en DOM."""
+def _smart_snapshot_from_sources(serial):
+    """Fast single-board hydration: memory -> browser payload -> mounted carrier."""
     serial = _sanitize_serial(serial)
     record = _find_board_record(serial)
     if record and record.get("png_b64"):
         return "data:image/png;base64," + record["png_b64"]
 
-    record = _load_one_board_payload(serial)
+    record = _browser_load_one_payload(serial)
     if record and record.get("png_b64"):
         return "data:image/png;base64," + record["png_b64"]
     return ""
 
 
-def listar_boards(incluir_base64: bool = False, recargar: bool = False, modo: str = "auto"):
-    """Lista boards; cargar Base64 sigue siendo opcional."""
+def _cache_injection_script(serial, callback_name):
+    """
+    The board canvas writes its compact index immediately in the browser after
+    a successful Python callback. The Base64 cache is bounded: it is helpful
+    after a runtime reconnect but never allowed to consume all localStorage.
+    """
+    return f"""
+<script>
+(() => {{
+  const SERIAL = {json.dumps(_sanitize_serial(serial))};
+  const CALLBACK = {json.dumps(callback_name)};
+  const PREFIX = 'data:image/png;base64,';
+  const MAX_PAYLOAD_CHARS = 1200000;
+  const MAX_TOTAL_PAYLOAD_CHARS = 3400000;
+
+  function windows() {{
+    const out = [];
+    const add = (w) => {{ if (w && !out.includes(w)) out.push(w); }};
+    add(window);
+    try {{ add(window.parent); }} catch (_) {{}}
+    try {{ add(window.top); }} catch (_) {{}}
+    return out;
+  }}
+
+  function notebookIdentity() {{
+    for (const w of windows()) {{
+      try {{
+        const href = String(w.location && w.location.href || '');
+        if (href && href !== 'about:blank') return href.split('#')[0].split('?')[0];
+      }} catch (_) {{}}
+    }}
+    return 'unknown-notebook';
+  }}
+
+  const identity = notebookIdentity();
+  const indexKey = 'amc_board_index_v7:' + identity;
+  const payloadPrefix = 'amc_board_payload_v7:' + identity + ':';
+
+  function storages() {{
+    const out = [];
+    for (const w of windows()) {{
+      try {{
+        const s = w.localStorage;
+        if (s && !out.includes(s)) out.push(s);
+      }} catch (_) {{}}
+    }}
+    return out;
+  }}
+
+  function readIndex(storage) {{
+    try {{
+      const parsed = JSON.parse(storage.getItem(indexKey) || '');
+      if (parsed && Array.isArray(parsed.boards)) return parsed;
+    }} catch (_) {{}}
+    return {{version:'7', boards:[]}};
+  }}
+
+  function writeIndex(serial, revision, bytes) {{
+    for (const storage of storages()) {{
+      try {{
+        const index = readIndex(storage);
+        const bySerial = new Map();
+        for (const item of index.boards || []) {{
+          if (item && item.serial) bySerial.set(String(item.serial), item);
+        }}
+        const old = bySerial.get(serial) || {{}};
+        bySerial.set(serial, {{
+          serial,
+          revision: Math.max(Number(old.revision || 0) || 0, Number(revision || 0) || 0),
+          bytes_png_aprox: Math.max(0, Number(bytes || 0) || 0),
+          updated_at: Date.now() / 1000
+        }});
+        index.version = '7';
+        index.updated_at = Date.now() / 1000;
+        index.boards = Array.from(bySerial.values())
+          .sort((a,b) => String(a.serial).localeCompare(String(b.serial)));
+        storage.setItem(indexKey, JSON.stringify(index));
+      }} catch (_) {{}}
+    }}
+  }}
+
+  function evictPayloads(storage) {{
+    try {{
+      const rows = [];
+      let total = 0;
+      for (let i=0; i<storage.length; i++) {{
+        const key = storage.key(i);
+        if (!key || !key.startsWith(payloadPrefix)) continue;
+        try {{
+          const value = storage.getItem(key) || '';
+          const item = JSON.parse(value);
+          const size = String(item.data_url || '').length;
+          total += size;
+          rows.push({{key, size, updated_at:Number(item.updated_at || 0) || 0}});
+        }} catch (_) {{}}
+      }}
+      rows.sort((a,b) => a.updated_at - b.updated_at);
+      while (total > MAX_TOTAL_PAYLOAD_CHARS && rows.length > 1) {{
+        const victim = rows.shift();
+        storage.removeItem(victim.key);
+        total -= victim.size;
+      }}
+    }} catch (_) {{}}
+  }}
+
+  function writePayload(dataUrl, revision, mustRefresh) {{
+    if (!mustRefresh || typeof dataUrl !== 'string' ||
+        !dataUrl.startsWith(PREFIX) || dataUrl.length > MAX_PAYLOAD_CHARS) return;
+    const key = payloadPrefix + SERIAL;
+    for (const storage of storages()) {{
+      try {{
+        storage.setItem(key, JSON.stringify({{
+          version:'7', revision:Number(revision || 0) || 0,
+          updated_at:Date.now()/1000, data_url:dataUrl
+        }}));
+        evictPayloads(storage);
+      }} catch (_) {{}}
+    }}
+  }}
+
+  function responseData(answer) {{
+    return answer && answer.data && typeof answer.data === 'object'
+      ? answer.data : (answer || {{}});
+  }}
+
+  try {{
+    if (!window.google || !google.colab || !google.colab.kernel) return;
+    const kernel = google.colab.kernel;
+    const previous = kernel.invokeFunction;
+    if (typeof previous !== 'function') return;
+
+    const priorCallbacks = previous.__amcBoardV7Callbacks || {{}};
+    if (priorCallbacks[CALLBACK]) return;
+
+    const wrapper = async function(...args) {{
+      const answer = await previous.apply(this, args);
+      try {{
+        const called = args[0];
+        const callArgs = args[1] || [];
+        if (called === CALLBACK) {{
+          const dataUrl = callArgs[0] || '';
+          const requestedRevision = Number(callArgs[1] || 0) || 0;
+          const commitVisible = !!callArgs[2];
+          const result = responseData(answer);
+          const revision = Math.max(
+            requestedRevision, Number(result && result.revision || 0) || 0
+          );
+          const bytes = dataUrl.startsWith(PREFIX)
+            ? Math.max(0, Math.floor((dataUrl.length - PREFIX.length) * 3 / 4))
+            : 0;
+          writeIndex(SERIAL, revision, bytes);
+          // The payload is cached only for the important notebook-output
+          // commit (tab switch/page hide), not after every tiny pen segment.
+          writePayload(dataUrl, revision, commitVisible);
+        }}
+      }} catch (_) {{}}
+      return answer;
+    }};
+    wrapper.__amcBoardV7Callbacks = Object.assign({{}}, priorCallbacks, {{[CALLBACK]:true}});
+    kernel.invokeFunction = wrapper;
+  }} catch (_) {{}}
+}})();
+</script>
+"""
+
+
+# Retain the tested canvas/UI implementation and add the cache interceptor
+# after its own script. It is installed before the user can draw.
+_RENDER_BOARD_HTML_CORE = _render_board_html
+
+
+def _render_board_html(serial, initial_data_url, initial_revision, callback_name):
+    return _RENDER_BOARD_HTML_CORE(
+        serial, initial_data_url, initial_revision, callback_name
+    ) + _cache_injection_script(serial, callback_name)
+
+
+def _wait_for_carrier(serial, _unused_png_b64=None):
+    """
+    Keep a small synchronization window before notebook.save. The old version
+    performed repeated get_ipynb/full-DOM operations here; the output update is
+    already issued synchronously through DisplayHandle, so waiting is enough.
+    """
+    time.sleep(0.12)
+    return True
+
+
+def _make_snapshot_callback(serial):
+    serial = _sanitize_serial(serial)
+    callback_name = f"amc7.persist.pushSnapshot.{serial}"
+    png_path = f"/content/pizarra_cell_{serial}.png"
+
+    def _callback(data_url_png, client_revision=None, commit_visible_output=False):
+        record = _upsert_board_record(serial, data_url_png, client_revision)
+        if record is None:
+            return {"ok": False, "error": "Snapshot PNG Base64 inválido"}
+
+        canonical_data_url = "data:image/png;base64," + record["png_b64"]
+        try:
+            with open(png_path, "wb") as fh:
+                fh.write(base64.b64decode(record["png_b64"], validate=True))
+        except Exception:
+            pass
+
+        # Persist the actual image and a separate compact catalog. No get_ipynb
+        # is required for this write path.
+        _update_carrier_output(serial, canonical_data_url, record["revision"])
+        _update_manifest_output()
+        embedded_in_model = _wait_for_carrier(serial, record["png_b64"])
+
+        visible_updated = False
+        if bool(commit_visible_output):
+            visible_updated = _refresh_visible_output(
+                serial, canonical_data_url, record["revision"], callback_name
+            )
+
+        saved = _request_notebook_save()
+        return {
+            "ok": True,
+            "serial": serial,
+            "revision": record["revision"],
+            "bytes_png_aprox": len(record["png_b64"]) * 3 // 4,
+            "persisted_to_notebook_model": bool(embedded_in_model),
+            "visible_output_updated": bool(visible_updated),
+            "notebook_save_requested": bool(saved),
+        }
+
+    return _callback
+
+
+def _ensure_callback_registered(serial):
+    serial = _sanitize_serial(serial)
+    callback_name = f"amc7.persist.pushSnapshot.{serial}"
+    if callback_name not in _REGISTERED_CALLBACKS:
+        _require_colab()
+        _colab_output.register_callback(callback_name, _make_snapshot_callback(serial))
+        _REGISTERED_CALLBACKS.add(callback_name)
+    return callback_name
+
+
+def recargar_boards_desde_notebook(conservar_runtime=True, modo="inteligente"):
+    """
+    Smart board discovery.
+
+    modo="inteligente" (default)
+        Read browser index, compact manifest or mounted carrier metadata only.
+        It never asks Colab for the full .ipynb.
+
+    modo="seguro" / "compatibilidad"
+        Explicit migration/recovery path. It reads the whole notebook once,
+        extracts only board carriers and immediately discards the large JSON.
+        Use it only in a different browser/account with no local index.
+
+    modo="rapido"
+        Alias for "inteligente".
+    """
+    global _LAST_DISCOVERY_SOURCE
+    mode = str(modo or "inteligente").strip().lower()
+
+    if mode in {"seguro", "compatibilidad", "legacy", "ipynb", "completo"}:
+        return _legacy_scan_entire_notebook(conservar_runtime=conservar_runtime)
+
+    catalog = _browser_read_catalog()
+    rows = catalog.get("boards", [])
+    _LAST_DISCOVERY_SOURCE = catalog.get("source", "smart-index")
+    _merge_board_records(rows, conservar_runtime=conservar_runtime)
+    return boards_guardados
+
+
+def listar_boards(incluir_base64=False, recargar=False, modo="inteligente"):
+    """
+    Return metadata by default. incluir_base64=True does not launch a notebook
+    scan; it attaches only payloads already available in memory/browser cache.
+    """
     if recargar:
         recargar_boards_desde_notebook(conservar_runtime=True, modo=modo)
 
     if incluir_base64:
-        # Preferir el DOM si está disponible, pero no borrar datos recuperados
-        # desde el fallback autoritativo cuando el DOM aún está virtualizado.
-        loaded = _fast_scan_js(include_payload=True)
-        if loaded:
-            _merge_board_records(loaded, conservar_runtime=True)
+        for row in list(boards_guardados):
+            if row.get("png_b64"):
+                continue
+            _browser_load_one_payload(row.get("serial", ""))
 
-    rows = []
+    result = []
     for item in boards_guardados:
-        b64 = item.get("png_b64", "")
-        estimated = int(item.get("bytes_png_aprox", 0) or 0)
-        if b64:
-            estimated = len(b64) * 3 // 4
-        row = {
-            "serial": item.get("serial"),
-            "bytes_png_aprox": estimated,
-            "revision": item.get("revision", 0),
-            "updated_at": item.get("updated_at", 0),
-            "source_cell": item.get("source_cell", "frontend"),
-            "source_output": item.get("source_output", "carrier"),
-        }
+        row = _board_metadata(item)
+        if not row:
+            continue
+        row["source_cell"] = item.get("source_cell", "smart-index")
+        row["source_output"] = item.get("source_output", _LAST_DISCOVERY_SOURCE)
         if incluir_base64:
-            row["png_b64"] = b64
-        rows.append(row)
-    return rows
+            row["png_b64"] = item.get("png_b64", "")
+        result.append(row)
+    return result
 
 
-def get_boards(incluir_base64: bool = False, recargar: bool = True, modo: str = "auto"):
+def get_boards(incluir_base64=False, recargar=True, modo="inteligente"):
     """
-    Carga los boards guardados antes de abrirlos.
+    Instant board catalog for normal use.
 
-    Uso normal, también tras desconectar/reconectar el runtime:
-        from AutoMindCloud.Board_Script import *
-        get_boards()
+    This function is intentionally metadata-only and never reads the  notebook
+    JSON by default. After a normal disconnect/reconnect in the same browser,
+    the local compact index returns the list immediately.
 
-    No devuelve [] por depender únicamente de outputs actualmente visibles:
-    si el DOM está virtualizado, pasa automáticamente al lector del .ipynb.
+    For a new browser/account whose local cache and compact DOM manifest are
+    unavailable, run once:
+        get_boards(modo="seguro")
     """
     global _BOARDS_INITIALIZED
     _require_colab()
-
     if recargar or not _BOARDS_INITIALIZED:
         recargar_boards_desde_notebook(
             conservar_runtime=True,
             modo=modo,
         )
         _BOARDS_INITIALIZED = True
-
     return listar_boards(incluir_base64=incluir_base64, recargar=False)
 
 
-def diagnostico_boards():
-    """Diagnóstico que permite confirmar si se usó DOM o fallback del .ipynb."""
-    frontend = _fast_scan_js(include_payload=False)
-    return {
-        "modo_carga_predeterminado": "auto: DOM y fallback autoritativo cuando el DOM está vacío",
-        "version_descubrimiento": _FAST_DISCOVERY_VERSION,
-        "origen_ultima_carga": _LAST_DISCOVERY_SOURCE,
-        "error_ultimo_escaneo_rapido": _LAST_FAST_DISCOVERY_ERROR,
-        "fallback_compatibilidad_activado": bool(_AUTO_LEGACY_FALLBACK_DONE),
-        "boards_detectados_en_frontend": frontend,
-        "boards_en_runtime": listar_boards(incluir_base64=False, recargar=False),
-        "notebook_json_en_memoria": bool(notebook_json),
-    }
+def _snapshot_from_notebook(serial):
+    """
+    Open one board intelligently. Full notebook parsing is a last resort for
+    that one explicitly requested board, never for get_boards().
+    """
+    serial = _sanitize_serial(serial)
+    data_url = _smart_snapshot_from_sources(serial)
+    if data_url:
+        return data_url
+
+    # New browser/account with no cached payload: only now is full retrieval
+    # justified, because the user explicitly requested this particular board.
+    record = _legacy_load_one_board_payload(serial)
+    if record and record.get("png_b64"):
+        return "data:image/png;base64," + record["png_b64"]
+    return ""
 
 
-def board(serial: str = "board"):
-    """Abre un board y lo rehidrata aunque su output esté virtualizado."""
+def board(serial="board"):
+    """Open one editable board; only this board's Base64 is hydrated."""
     _require_colab()
     if not _BOARDS_INITIALIZED:
-        get_boards(modo="auto")
+        get_boards()
 
     serial = _sanitize_serial(serial)
     callback_name = _ensure_callback_registered(serial)
@@ -1364,17 +1726,30 @@ def board(serial: str = "board"):
 
     if initial_data_url and (record is None or not record.get("png_b64")):
         record = _upsert_board_record(
-            serial,
-            initial_data_url,
-            (record or {}).get("revision", 0),
+            serial, initial_data_url, (record or {}).get("revision", 0)
         )
 
     initial_revision = int((record or {}).get("revision", 0) or 0)
-
-    # Abrir un board existente no crea ni sobrescribe su carrier. El carrier se
-    # modifica sólo cuando el callback recibe un dibujo nuevo.
     html = _render_board_html(serial, initial_data_url, initial_revision, callback_name)
     _BOARD_HANDLES[serial] = display(HTML(html), display_id=True)
+
+
+def diagnostico_boards():
+    """Diagnostics without get_ipynb or recursive full-DOM scanning."""
+    catalog = _browser_read_catalog()
+    return {
+        "version_descubrimiento": _SMART_INDEX_VERSION,
+        "modo_predeterminado": "inteligente: índice pequeño, sin get_ipynb",
+        "origen_ultima_carga": _LAST_DISCOVERY_SOURCE,
+        "origen_catalogo_actual": catalog.get("source", "desconocido"),
+        "error_ultimo_indice_inteligente": _LAST_SMART_ERROR,
+        "lectura_completa_del_notebook_en_este_runtime": bool(
+            _FULL_NOTEBOOK_READ_THIS_RUNTIME
+        ),
+        "boards_catalogo_inteligente": catalog.get("boards", []),
+        "boards_en_runtime": listar_boards(incluir_base64=False, recargar=False),
+        "notebook_json_en_memoria": bool(notebook_json),
+    }
 
 
 __all__ = [
