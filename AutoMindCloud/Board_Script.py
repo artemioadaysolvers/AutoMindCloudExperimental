@@ -2168,3 +2168,524 @@ def diagnostico_boards():
         "recuperacion_legacy": 'board("serial", recuperar=True)',
     })
     return data
+
+# =============================================================================
+# BOARD ONE-COMMAND AUTO-RECOVERY (v9)
+# -----------------------------------------------------------------------------
+# Public contract:
+#
+#     board("alpha")
+#
+# is the only command needed to open, restore and continue editing a board.
+#
+# Opening is intentionally non-blocking:
+#   1. IndexedDB restores immediately in the same browser.
+#   2. A mounted notebook carrier restores without Python when available.
+#   3. Otherwise the already-rendered board requests ONLY its own portable
+#      snapshot from Python in the background. Python reads the .ipynb only in
+#      that last case, so the cell does not remain blocked while the notebook
+#      is transferred/parsing completes.
+#
+# The full notebook is never read merely because get_boards() or board() was
+# called. It is used solely as the durable cross-browser recovery source for a
+# board whose browser cache is genuinely unavailable.
+# =============================================================================
+
+_AUTO_RECOVERY_VERSION = "9"
+_AUTO_RESTORE_CALLBACKS = set()
+
+
+def _auto_restore_callback_name(serial: str) -> str:
+    return f"amc9.restore.fetchSnapshot.{_sanitize_serial(serial)}"
+
+
+def _request_ipynb_raw_for_one_board():
+    """Ask Colab for the current notebook once, without building a Python dict."""
+    try:
+        from google.colab import _message
+        try:
+            response = _message.blocking_request("get_ipynb", timeout_sec=90)
+        except TypeError:
+            response = _message.blocking_request(
+                "get_ipynb", request="", timeout_sec=90
+            )
+        response = response or {}
+        return response.get("ipynb", response) if isinstance(response, dict) else response
+    except Exception:
+        return None
+
+
+def _extract_one_board_from_ipynb_raw(raw, serial: str):
+    """
+    Find one carrier directly in the raw ipynb JSON text.
+
+    This avoids json.loads() plus a walk over every cell/output. The notebook
+    bytes still have to be transferred on a true cross-browser cache miss, but
+    CPU/memory work is limited to one regex scan and one requested board.
+    """
+    serial = _sanitize_serial(serial)
+    if isinstance(raw, dict):
+        return _extract_one_board_from_notebook(raw, serial)
+    if isinstance(raw, bytes):
+        try:
+            raw = raw.decode("utf-8", errors="ignore")
+        except Exception:
+            return None
+    if not isinstance(raw, str) or not raw:
+        return None
+
+    # In raw JSON, HTML attribute quotes are represented as \".  The optional
+    # literal backslash accepts both raw JSON and already-decoded HTML forms.
+    quote = r'(?:\\)?["\']'
+    escaped_serial = re.escape(serial)
+    pattern = re.compile(
+        r'<img\b'
+        r'(?=[^>]*?\bid=' + quote
+        + r'amc_persisted_snapshot_(?:ext_|int_)?' + escaped_serial + quote + r')'
+        r'(?=[^>]*?\bsrc=' + quote
+        + r'(?P<src>data:image/png;base64,[A-Za-z0-9+/=]+)' + quote + r')'
+        r'[^>]*>',
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    selected = None
+    for match in pattern.finditer(raw):
+        tag = match.group(0)
+        data_url = match.group("src")
+        png_b64 = data_url.split(",", 1)[1] if "," in data_url else ""
+        if len(png_b64) < 16:
+            continue
+        revision_match = re.search(
+            r'\bdata-amc-revision=' + quote + r'(?P<revision>\d+)' + quote,
+            tag,
+            re.IGNORECASE,
+        )
+        try:
+            revision = int(revision_match.group("revision")) if revision_match else 0
+        except Exception:
+            revision = 0
+        selected = {
+            "serial": serial,
+            "data_url": data_url,
+            "revision": revision,
+            "bytes_png_aprox": len(png_b64) * 3 // 4,
+            "source": "ipynb-raw-single-board",
+        }
+    return selected
+
+
+def _portable_restore_one_board(serial: str):
+    """Return exactly one PNG data URL, only after local browser recovery failed."""
+    global _FULL_NOTEBOOK_READ_THIS_RUNTIME, _LAST_DISCOVERY_SOURCE
+    serial = _sanitize_serial(serial)
+
+    # A board already hydrated in this runtime should never trigger another
+    # notebook request.
+    record = _find_board_record(serial)
+    if record and record.get("png_b64"):
+        return {
+            "serial": serial,
+            "data_url": "data:image/png;base64," + record["png_b64"],
+            "revision": int(record.get("revision", 0) or 0),
+            "bytes_png_aprox": len(record["png_b64"]) * 3 // 4,
+            "source": "runtime-memory",
+        }
+
+    # The Colab filesystem is cheap to query and may contain the most recent
+    # snapshot while a runtime is still alive.
+    local_data_url = _file_to_dataurl(f"/content/pizarra_cell_{serial}.png")
+    if local_data_url:
+        return {
+            "serial": serial,
+            "data_url": local_data_url,
+            "revision": int((record or {}).get("revision", 0) or 0),
+            "bytes_png_aprox": max(0, (len(local_data_url) - 22) * 3 // 4),
+            "source": "runtime-file",
+        }
+
+    raw = _request_ipynb_raw_for_one_board()
+    _FULL_NOTEBOOK_READ_THIS_RUNTIME = True
+    _LAST_DISCOVERY_SOURCE = "ipynb-automatic-single-board"
+    return _extract_one_board_from_ipynb_raw(raw, serial)
+
+
+def _make_auto_restore_callback(serial: str):
+    serial = _sanitize_serial(serial)
+
+    def _callback():
+        result = _portable_restore_one_board(serial)
+        if not result or not result.get("data_url"):
+            return {
+                "ok": False,
+                "found": False,
+                "serial": serial,
+                "error": "No existe un respaldo persistido para este board",
+            }
+
+        # Keep only small metadata in runtime.  Do not decode/store a duplicate
+        # multi-megabyte Base64: the browser will cache the PNG as a Blob.
+        _merge_board_records([
+            {
+                "serial": serial,
+                "revision": int(result.get("revision", 0) or 0),
+                "bytes_png_aprox": int(result.get("bytes_png_aprox", 0) or 0),
+                "updated_at": 0.0,
+                "source_cell": "automatic-recovery",
+                "source_output": result.get("source", "ipynb"),
+            }
+        ], conservar_runtime=True)
+
+        return {
+            "ok": True,
+            "found": True,
+            "serial": serial,
+            "data_url": result["data_url"],
+            "revision": int(result.get("revision", 0) or 0),
+            "bytes_png_aprox": int(result.get("bytes_png_aprox", 0) or 0),
+            "source": result.get("source", "ipynb"),
+        }
+
+    return _callback
+
+
+def _ensure_auto_restore_callback_registered(serial: str) -> str:
+    serial = _sanitize_serial(serial)
+    callback_name = _auto_restore_callback_name(serial)
+    if callback_name not in _AUTO_RESTORE_CALLBACKS:
+        _require_colab()
+        _colab_output.register_callback(callback_name, _make_auto_restore_callback(serial))
+        _AUTO_RESTORE_CALLBACKS.add(callback_name)
+    return callback_name
+
+
+def _automatic_recovery_client_script(serial: str, restore_callback_name: str,
+                                      has_python_seed: bool = False) -> str:
+    """Browser-side background fallback after IndexedDB/mounted-carrier restore."""
+    template = r'''
+<script>
+(() => {
+  const SERIAL = __AMC_SERIAL_JSON__;
+  const RESTORE_CALLBACK = __AMC_RESTORE_CALLBACK_JSON__;
+  const HAS_PYTHON_SEED = __AMC_HAS_SEED__;
+  const ROOT_ID = 'amc_board_root_' + SERIAL;
+  const CANVAS_ID = 'amc_board_canvas_' + SERIAL;
+  const EMBEDDED_ID = 'amc_board_embedded_snapshot_' + SERIAL;
+  const PREFIX = 'data:image/png;base64,';
+  const DB_NAME = 'amc_board_cache_v8';
+  const STORE = 'payloads';
+
+  if (HAS_PYTHON_SEED) return;
+
+  function allWindows() {
+    const rows = [];
+    const add = (w) => { if (w && !rows.includes(w)) rows.push(w); };
+    add(window);
+    try { add(window.parent); } catch (_) {}
+    try { add(window.top); } catch (_) {}
+    return rows;
+  }
+
+  function notebookIdentity() {
+    for (const w of allWindows()) {
+      try {
+        const href = String((w.location && w.location.href) || '');
+        if (href && href !== 'about:blank') return href.split('#')[0].split('?')[0];
+      } catch (_) {}
+    }
+    return 'unknown-notebook';
+  }
+
+  const IDENTITY = notebookIdentity();
+  const PAYLOAD_KEY = IDENTITY + '\u0000' + SERIAL;
+
+  function rootAndState() {
+    const root = document.getElementById(ROOT_ID);
+    return {root, state: root && root.querySelector('[data-amc-role="state"]')};
+  }
+
+  function setState(text, mode) {
+    const item = rootAndState();
+    if (!item.state) return;
+    item.state.textContent = text;
+    item.state.dataset.mode = mode || 'idle';
+  }
+
+  function responseData(answer) {
+    return answer && answer.data && typeof answer.data === 'object'
+      ? answer.data : (answer || {});
+  }
+
+  function kernelAvailable() {
+    return !!(window.google && google.colab && google.colab.kernel
+      && typeof google.colab.kernel.invokeFunction === 'function');
+  }
+
+  function dbFactory() {
+    for (const w of allWindows()) {
+      try { if (w.indexedDB) return w.indexedDB; } catch (_) {}
+    }
+    return null;
+  }
+
+  function openDb() {
+    return new Promise((resolve, reject) => {
+      const factory = dbFactory();
+      if (!factory) { reject(new Error('IndexedDB no disponible')); return; }
+      let request;
+      try { request = factory.open(DB_NAME, 1); }
+      catch (error) { reject(error); return; }
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(STORE)) {
+          db.createObjectStore(STORE, {keyPath:'key'});
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error('No se pudo abrir IndexedDB'));
+    });
+  }
+
+  async function writeCachedBlob(blob, revision) {
+    if (!(blob instanceof Blob) || !blob.size) return false;
+    const db = await openDb();
+    try {
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readwrite');
+        const request = tx.objectStore(STORE).put({
+          key: PAYLOAD_KEY,
+          version: 9,
+          serial: SERIAL,
+          revision: Number(revision || 0) || 0,
+          updated_at: Date.now() / 1000,
+          blob
+        });
+        request.onsuccess = () => resolve(true);
+        request.onerror = () => reject(request.error || new Error('No se pudo escribir cache'));
+      });
+      return true;
+    } finally {
+      try { db.close(); } catch (_) {}
+    }
+  }
+
+  async function dataUrlToBlob(dataUrl) {
+    if (typeof dataUrl !== 'string' || !dataUrl.startsWith(PREFIX)) return null;
+    try {
+      const response = await fetch(dataUrl);
+      return await response.blob();
+    } catch (_) {
+      try {
+        const raw = atob(dataUrl.slice(PREFIX.length));
+        const chunk = 32768;
+        const pieces = [];
+        for (let i = 0; i < raw.length; i += chunk) {
+          const text = raw.slice(i, i + chunk);
+          const bytes = new Uint8Array(text.length);
+          for (let j = 0; j < text.length; j++) bytes[j] = text.charCodeAt(j);
+          pieces.push(bytes);
+        }
+        return new Blob(pieces, {type:'image/png'});
+      } catch (_) { return null; }
+    }
+  }
+
+  async function paintBlob(blob) {
+    return new Promise((resolve) => {
+      const canvas = document.getElementById(CANVAS_ID);
+      const ctx = canvas && canvas.getContext && canvas.getContext('2d');
+      if (!canvas || !ctx || !(blob instanceof Blob)) { resolve(false); return; }
+      const url = URL.createObjectURL(blob);
+      const image = new Image();
+      image.onload = () => {
+        try {
+          ctx.save();
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(image, 0, 0, image.naturalWidth, image.naturalHeight,
+                        0, 0, canvas.width, canvas.height);
+          ctx.restore();
+          const embedded = document.getElementById(EMBEDDED_ID);
+          if (embedded) embedded.src = url;
+          resolve(true);
+        } catch (_) { resolve(false); }
+        finally {
+          setTimeout(() => { try { URL.revokeObjectURL(url); } catch (_) {} }, 1000);
+        }
+      };
+      image.onerror = () => {
+        try { URL.revokeObjectURL(url); } catch (_) {}
+        resolve(false);
+      };
+      image.src = url;
+    });
+  }
+
+  function mountedManifestKnowsThisIsNew() {
+    // Browser localStorage may be stale when another account/browser changed
+    // the notebook. Only the compact manifest currently mounted by this exact
+    // notebook is authoritative enough to suppress portable recovery.
+    let sawCurrentManifest = false;
+    for (const w of allWindows()) {
+      try {
+        const doc = w.document;
+        const node = doc && doc.getElementById('amc_board_manifest_v7');
+        const encoded = node && node.getAttribute('data-amc-index-b64');
+        if (!encoded) continue;
+        const parsed = JSON.parse(atob(encoded));
+        const rows = Array.isArray(parsed && parsed.boards) ? parsed.boards : [];
+        sawCurrentManifest = true;
+        if (rows.some((row) => String(row && row.serial || '') === SERIAL)) return false;
+      } catch (_) {}
+    }
+    return sawCurrentManifest;
+  }
+
+  let userTouched = false;
+  let started = false;
+  const canvas = document.getElementById(CANVAS_ID);
+  if (canvas) {
+    canvas.addEventListener('pointerdown', () => { userTouched = true; }, true);
+  }
+
+  async function autoRestore() {
+    // v8 has already had time to restore IndexedDB, old localStorage, or a
+    // mounted carrier. This script runs only if those browser-only paths did
+    // not report success.
+    await new Promise((resolve) => setTimeout(resolve, 380));
+    if (started || userTouched) return;
+
+    const status = rootAndState().state;
+    if (status && status.dataset.mode === 'saved') return;
+
+    // In a browser which already holds a compact catalog, absence of this
+    // serial means the user is creating a genuinely new board. No ipynb read.
+    if (mountedManifestKnowsThisIsNew()) {
+      setState('Listo para dibujar', 'idle');
+      return;
+    }
+
+    if (!kernelAvailable()) {
+      setState('Sin runtime para recuperar respaldo', 'error');
+      return;
+    }
+
+    started = true;
+    setState('Recuperando respaldo del notebook…', 'saving');
+    try {
+      const answer = await google.colab.kernel.invokeFunction(
+        RESTORE_CALLBACK, [], {}
+      );
+      const result = responseData(answer);
+      if (userTouched) {
+        // Never replace a new drawing the user began while the fallback was
+        // loading. The user can keep working and the next save wins.
+        return;
+      }
+      if (!result || result.ok === false || !result.data_url) {
+        setState('Listo para dibujar', 'idle');
+        return;
+      }
+      const blob = await dataUrlToBlob(result.data_url);
+      if (!blob || userTouched) {
+        setState('Listo para dibujar', 'idle');
+        return;
+      }
+      const painted = await paintBlob(blob);
+      if (!painted || userTouched) {
+        setState('Listo para dibujar', 'idle');
+        return;
+      }
+      // Cache first so every next board("alpha") stays browser-local.
+      writeCachedBlob(blob, Number(result.revision || 0) || 0).catch(() => {});
+      setState('✓ Board recuperado automáticamente', 'saved');
+    } catch (error) {
+      console.warn('AMC automatic board recovery:', error);
+      if (!userTouched) setState('Listo para dibujar', 'idle');
+    }
+  }
+
+  autoRestore();
+})();
+</script>
+'''
+    return (
+        template.replace("__AMC_SERIAL_JSON__", json.dumps(_sanitize_serial(serial)))
+        .replace("__AMC_RESTORE_CALLBACK_JSON__", json.dumps(restore_callback_name))
+        .replace("__AMC_HAS_SEED__", "true" if has_python_seed else "false")
+    )
+
+
+_RENDER_BOARD_HTML_V8 = _render_board_html
+
+
+def _render_board_html(serial, initial_data_url, initial_revision, callback_name,
+                       restore_callback_name=None):
+    """v8 fast renderer plus transparent v9 background recovery."""
+    html = _RENDER_BOARD_HTML_V8(
+        serial, initial_data_url, initial_revision, callback_name
+    )
+    restore_name = restore_callback_name or _auto_restore_callback_name(serial)
+    return html + _automatic_recovery_client_script(
+        serial,
+        restore_name,
+        has_python_seed=bool(initial_data_url),
+    )
+
+
+def board(serial="board"):
+    """
+    Open, restore and edit a board with one command.
+
+        board("alpha")
+
+    The call itself never waits for a full notebook read.  It opens the canvas
+    immediately; the browser restores IndexedDB first and automatically asks
+    for the notebook backup only when that local copy does not exist.
+    """
+    _require_colab()
+    serial = _sanitize_serial(serial)
+    callback_name = _ensure_callback_registered(serial)
+    restore_callback_name = _ensure_auto_restore_callback_registered(serial)
+
+    # Do not call get_boards() here. Discovery is optional metadata; an actual
+    # board opens independently and its recovery is browser-side/asynchronous.
+    record = _find_board_record(serial)
+    initial_data_url = ""
+    initial_revision = int((record or {}).get("revision", 0) or 0)
+
+    html = _render_board_html(
+        serial,
+        initial_data_url,
+        initial_revision,
+        callback_name,
+        restore_callback_name=restore_callback_name,
+    )
+    _BOARD_HANDLES[serial] = display(HTML(html), display_id=True)
+
+
+# Final public API: no setup command is required for normal board use.
+__all__ = [
+    "board",
+    "get_boards",
+    "listar_boards",
+    "recargar_boards_desde_notebook",
+    "diagnostico_boards",
+    "boards_guardados",
+    "notebook_json",
+]
+
+_diagnostico_boards_v8 = diagnostico_boards
+
+
+def diagnostico_boards():
+    data = _diagnostico_boards_v8()
+    data.update({
+        "version_autorecuperacion": _AUTO_RECOVERY_VERSION,
+        "uso_normal": 'board("serial")',
+        "restauracion_automatica": (
+            "IndexedDB -> carrier montado -> respaldo del .ipynb en segundo plano"
+        ),
+        "lectura_completa_bloquea_board": False,
+    })
+    return data
