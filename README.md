@@ -25,11 +25,11 @@
 ---
 
 ### 🔧 Features
-- ⚙️ **Calculus Digitalization & Automation** (Automatic Evaluation complement to Sympy)  
+- ⚙️ **Automatic Substitution** (Complement to Sympy)  
 - 🧠 **Calculus Summary with IA**  
 - 🧩 **Whiteboard Integration on Colab**  
-- 🧱 **STEP / URDF Visualization**
-- 📐 **DXF Visualization**
+- 🧱 **.STEP / .URDF+ / .USD Viewer on Colab**
+- 📐 **.DXF Visualization on Colab**
 
 ---
 
@@ -76,7 +76,7 @@
 
 ---
 
-### 🧱 Step Render on Colab
+### 🧱 .STEP Viewer on Colab
 
 <p align="center">
   <img width="900" alt="STEP Render"
@@ -85,18 +85,19 @@
 
 ---
 
-### 🤖 URDF Viewer on Colab
+### 🤖 .URDF Viewer on Colab
 
 <p align="center">
   <img width="900" alt="URDF Viewer"
-       src="https://github.com/user-attachments/assets/e603c2d2-48d1-4405-b705-22e3ae0fb178"
+       src="https://github.com/user-attachments/assets/6c47e865-a56b-4a43-9fde-e350df735ab9"
 " />
 </p>
 
 
+
 ---
 
-### 🤖 USD Viewer on Colab
+### 🤖 .USD Viewer on Colab
 
 <p align="center">
   <img width="900" alt="USD Viewer"
@@ -108,10 +109,10 @@
 
 ---
 
-### 📐 DXF Visualization on Colab
+### 📐 .DXF Viewer on Colab
 
 <p align="center">
   <img width="650" alt="DXF Visualization"
-       src="https://github.com/user-attachments/assets/8b279d39-5bdb-4545-8081-274ea3af9219](https://github.com/user-attachments/assets/31a08744-f263-4da6-a28b-26d656393c7d" />
+       src="https://github.com/user-attachments/assets/009282b2-c86f-45f9-96cf-482ea2769711" />
 </p>
 
