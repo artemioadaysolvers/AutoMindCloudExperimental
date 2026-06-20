@@ -1,4 +1,4 @@
-# MJCF_Render_Script_DEPTH_ORDER_FIX_COLAB.py
+# MJCF_Render_Script_DEPTH_ORDER_FIX_NO_IA.py
 # Puente Google Colab / Jupyter <-> AutoMind MJCF Viewer modular.
 #
 # Correcciones incluidas:
@@ -17,7 +17,7 @@
 # Uso típico en Google Colab:
 #   from MJCF_Render_Script import MJCF_Render, MJCF_Visualization
 #   MJCF_Render("Mi_Robot_MJCF")
-#   MJCF_Visualization("Mi_Robot_MJCF", IA_Widgets=True, debug=True)
+#   MJCF_Visualization("Mi_Robot_MJCF", debug=True)
 #
 # También acepta un ZIP que contenga un MJCF .xml y sus recursos:
 #   MJCF_Render("/content/Mi_Robot_MJCF.zip")
@@ -42,10 +42,6 @@ from urllib.parse import unquote
 import requests
 from IPython.display import HTML
 
-
-API_DEFAULT_BASE = "https://gpt-proxy-github-619255898589.us-central1.run.app"
-API_INFER_PATH = "/infer"
-_COLAB_CALLBACK_REGISTERED = False
 
 _VIEWER_REPO_DEFAULT = "artemioadaysolvers/AutoMind-USD-URDF-Loader"
 _VIEWER_BRANCH_DEFAULT = "main"
@@ -1067,106 +1063,6 @@ def _probe_modular_viewer_entry(url: str, component_file: str, timeout: int = 35
     }
 
 
-def _register_colab_callback(api_base: str = API_DEFAULT_BASE, timeout: int = 120) -> None:
-    """Registra análisis IA opcional de thumbnails en Google Colab."""
-    global _COLAB_CALLBACK_REGISTERED
-    if _COLAB_CALLBACK_REGISTERED:
-        return
-
-    try:
-        from google.colab import output  # type: ignore
-    except Exception:
-        return
-
-    api_base = api_base.rstrip("/")
-    infer_url = api_base + API_INFER_PATH
-
-    def _describe_component_images(entries: Any) -> dict[str, str]:
-        if not isinstance(entries, (list, tuple)):
-            return {}
-
-        iso_b64: str | None = None
-        components: list[dict[str, Any]] = []
-        for raw in entries:
-            if not isinstance(raw, dict):
-                continue
-            key = str(raw.get("key") or "").strip()
-            image_b64 = str(raw.get("image_b64") or "").strip()
-            name = str(raw.get("name") or "").strip()
-            index = raw.get("index")
-            if key in {"__robot_iso__", "robot_iso", "__iso__", "robot", "full_robot"}:
-                if image_b64 and not iso_b64:
-                    iso_b64 = image_b64
-                continue
-            if not image_b64:
-                continue
-            if not key:
-                key = name or f"comp_{len(components)}"
-            if not name:
-                name = key
-            if not isinstance(index, int) or index < 0:
-                index = len(components)
-            components.append({"key": key, "name": name, "index": index, "image_b64": image_b64})
-
-        if not components:
-            return {}
-
-        components.sort(key=lambda item: int(item["index"]))
-        sequence = ", ".join(str(item["name"]) for item in components)
-        results: dict[str, str] = {}
-
-        for component in components:
-            key = str(component["key"])
-            name = str(component["name"])
-            index = int(component["index"])
-            image_b64 = str(component["image_b64"])
-            images: list[dict[str, str]] = []
-            if iso_b64:
-                images.append({"image_b64": iso_b64, "mime": "image/png"})
-            images.append({"image_b64": image_b64, "mime": "image/png"})
-            prompt = (
-                "Eres un modelo experto en robótica, CAD mecánico, MuJoCo y mecanismos articulados.\n"
-                "Analiza exclusivamente el componente actual usando la vista ISO global del sistema MJCF, "
-                "su thumbnail específico y la secuencia ordenada de nombres.\n"
-                f"Secuencia de nombres: {sequence}\n"
-                f"Componente actual: '{name}' (índice {index}).\n"
-                "Explica qué es y cuál es su función con máxima precisión técnica, "
-                "estilo formal, directo y robótico. No uses frases como 'se observa' ni repitas la consigna. "
-                "Máximo 2 frases."
-            )
-            try:
-                response = requests.post(infer_url, json={"text": prompt, "images": images}, timeout=timeout)
-            except Exception:
-                results[key] = ""
-                continue
-            if response.status_code != 200:
-                results[key] = ""
-                continue
-            text = (response.text or "").strip()
-            try:
-                if text.startswith("{") and text.endswith("}"):
-                    payload = json.loads(text)
-                    if isinstance(payload, dict):
-                        text = str(payload.get("text") or payload.get("message") or payload.get("content") or text)
-            except Exception:
-                pass
-            try:
-                if text.startswith('"') and text.endswith('"'):
-                    text = str(json.loads(text))
-            except Exception:
-                pass
-            results[key] = text or ""
-
-        try:
-            from google.colab import _message  # type: ignore
-            _message.blocking_request("notebook.save", {})
-        except Exception:
-            pass
-        return results
-
-    output.register_callback("describe_component_images", _describe_component_images)
-    _COLAB_CALLBACK_REGISTERED = True
-
 
 def MJCF_Visualization(
     folder_path: str = "MJCFModel",
@@ -1175,8 +1071,6 @@ def MJCF_Visualization(
     repo: str = _VIEWER_REPO_DEFAULT,
     branch: str = _VIEWER_BRANCH_DEFAULT,
     compFile: str = _VIEWER_ENTRY_DEFAULT,
-    api_base: str = API_DEFAULT_BASE,
-    IA_Widgets: bool = False,
     timeout: int = 35,
     debug: bool = False,
     auto_import_mtl_textures: bool = True,
@@ -1216,9 +1110,6 @@ def MJCF_Visualization(
     Chromium/Colab muestree CanvasTexture en el framebuffer visible. Los meshes
     originales permanecen activos para cinemática, selección y arrastre.
     """
-    if IA_Widgets:
-        _register_colab_callback(api_base=api_base)
-
     if folder_path.lower().endswith(".zip") and os.path.isfile(folder_path):
         folder_path = Unzip_MJCF(folder_path)
     if not os.path.isdir(folder_path):
@@ -1292,7 +1183,6 @@ def MJCF_Visualization(
     background_js = "null" if background is None else str(background_value)
     background_css_hex = f"{background_value & 0xFFFFFF:06x}"
     select_mode_js = json.dumps(select_mode)
-    ia_widgets_js = "true" if IA_Widgets else "false"
     debug_js = "true" if debug else "false"
     force_visible_js = "true" if force_visible_materials else "false"
     force_direct_mtl_js = "true" if force_direct_mtl_maps else "false"
@@ -1471,7 +1361,6 @@ def MJCF_Visualization(
       background: {background_js},
       pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
       autoResize: true,
-      IA_Widgets: {ia_widgets_js},
       debug: {debug_js},
       commitSha: VIEWER_COMMIT_SHA,
       commitUrl: VIEWER_COMMIT_URL,
