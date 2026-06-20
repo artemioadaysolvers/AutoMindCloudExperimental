@@ -1761,3 +1761,410 @@ __all__ = [
     "boards_guardados",
     "notebook_json",
 ]
+
+# =============================================================================
+# INSTANT BOARD HYDRATION (v8)
+# -----------------------------------------------------------------------------
+# board(serial) used to call eval_js with the full data:image/png;base64 payload
+# (or fall back to get_ipynb).  That creates an unnecessary browser -> kernel ->
+# browser round trip and is especially slow for large boards.
+#
+# v8 keeps the notebook carrier as the durable cross-browser backup, but stores
+# the latest PNG as a Blob in IndexedDB immediately after every confirmed save.
+# On a normal runtime reconnect, the viewer loads that Blob entirely in the
+# browser: Python receives only metadata and board() displays immediately.
+#
+# A one-time explicit recovery remains available for a legacy board with no
+# local IndexedDB copy:
+#     board("alpha", recuperar=True)
+# =============================================================================
+
+_INSTANT_CACHE_VERSION = "8"
+_INSTANT_DB_NAME = "amc_board_cache_v8"
+_INSTANT_DB_STORE = "payloads"
+
+
+def _instant_board_client_script(serial, callback_name, has_python_seed=False):
+    """Browser-only IndexedDB restore/cache bridge; never returns PNG to Python."""
+    template = r'''
+<script>
+(() => {
+  const SERIAL = __AMC_SERIAL_JSON__;
+  const CALLBACK = __AMC_CALLBACK_JSON__;
+  const HAS_PYTHON_SEED = __AMC_HAS_SEED__;
+  const DB_NAME = 'amc_board_cache_v8';
+  const STORE = 'payloads';
+  const PREFIX = 'data:image/png;base64,';
+  const ROOT_ID = 'amc_board_root_' + SERIAL;
+  const CANVAS_ID = 'amc_board_canvas_' + SERIAL;
+  const EMBEDDED_ID = 'amc_board_embedded_snapshot_' + SERIAL;
+
+  function allWindows() {
+    const rows = [];
+    const add = (w) => { if (w && !rows.includes(w)) rows.push(w); };
+    add(window);
+    try { add(window.parent); } catch (_) {}
+    try { add(window.top); } catch (_) {}
+    return rows;
+  }
+
+  function notebookIdentity() {
+    for (const w of allWindows()) {
+      try {
+        const href = String((w.location && w.location.href) || '');
+        if (href && href !== 'about:blank') return href.split('#')[0].split('?')[0];
+      } catch (_) {}
+    }
+    return 'unknown-notebook';
+  }
+
+  const IDENTITY = notebookIdentity();
+  const PAYLOAD_KEY = IDENTITY + '\\u0000' + SERIAL;
+
+  function setState(text, mode) {
+    try {
+      const root = document.getElementById(ROOT_ID);
+      const state = root && root.querySelector('[data-amc-role="state"]');
+      if (!state) return;
+      state.textContent = text;
+      state.dataset.mode = mode || 'idle';
+    } catch (_) {}
+  }
+
+  function dbFactory() {
+    for (const w of allWindows()) {
+      try {
+        if (w.indexedDB) return w.indexedDB;
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  function openDb() {
+    return new Promise((resolve, reject) => {
+      const factory = dbFactory();
+      if (!factory) { reject(new Error('IndexedDB no disponible')); return; }
+      let request;
+      try { request = factory.open(DB_NAME, 1); }
+      catch (error) { reject(error); return; }
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, {keyPath:'key'});
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error('No se pudo abrir IndexedDB'));
+    });
+  }
+
+  async function readCached() {
+    const db = await openDb();
+    try {
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readonly');
+        const request = tx.objectStore(STORE).get(PAYLOAD_KEY);
+        request.onsuccess = () => resolve(request.result || null);
+        request.onerror = () => reject(request.error || new Error('No se pudo leer cache'));
+      });
+    } finally {
+      try { db.close(); } catch (_) {}
+    }
+  }
+
+  async function writeCachedBlob(blob, revision) {
+    if (!(blob instanceof Blob) || !blob.size) return false;
+    const db = await openDb();
+    try {
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readwrite');
+        const request = tx.objectStore(STORE).put({
+          key: PAYLOAD_KEY,
+          version: 8,
+          serial: SERIAL,
+          revision: Number(revision || 0) || 0,
+          updated_at: Date.now() / 1000,
+          blob
+        });
+        request.onsuccess = () => resolve(true);
+        request.onerror = () => reject(request.error || new Error('No se pudo escribir cache'));
+      });
+      return true;
+    } finally {
+      try { db.close(); } catch (_) {}
+    }
+  }
+
+  async function dataUrlToBlob(dataUrl) {
+    if (typeof dataUrl !== 'string' || !dataUrl.startsWith(PREFIX)) return null;
+    try {
+      const response = await fetch(dataUrl);
+      return await response.blob();
+    } catch (_) {
+      try {
+        const payload = dataUrl.slice(PREFIX.length);
+        const raw = atob(payload);
+        const chunk = 32768;
+        const pieces = [];
+        for (let i = 0; i < raw.length; i += chunk) {
+          const text = raw.slice(i, i + chunk);
+          const bytes = new Uint8Array(text.length);
+          for (let j = 0; j < text.length; j++) bytes[j] = text.charCodeAt(j);
+          pieces.push(bytes);
+        }
+        return new Blob(pieces, {type:'image/png'});
+      } catch (_) { return null; }
+    }
+  }
+
+  async function cacheDataUrl(dataUrl, revision) {
+    try {
+      const blob = await dataUrlToBlob(dataUrl);
+      if (blob) await writeCachedBlob(blob, revision);
+    } catch (_) {}
+  }
+
+  async function oldV7LocalStoragePayload() {
+    const oldKey = 'amc_board_payload_v7:' + IDENTITY + ':' + SERIAL;
+    for (const w of allWindows()) {
+      try {
+        const raw = w.localStorage && w.localStorage.getItem(oldKey);
+        if (!raw) continue;
+        const value = JSON.parse(raw);
+        if (value && typeof value.data_url === 'string' && value.data_url.startsWith(PREFIX)) {
+          return {data_url:value.data_url, revision:Number(value.revision || 0) || 0};
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  function mountedCarrierDataUrl() {
+    const wanted = 'amc_persisted_snapshot_' + SERIAL;
+    const roots = [];
+    const add = (doc) => { if (doc && !roots.includes(doc)) roots.push(doc); };
+    for (const w of allWindows()) { try { add(w.document); } catch (_) {} }
+    // Targeted traversal only: main documents plus a bounded number of iframes.
+    for (let i = 0; i < roots.length && roots.length < 16; i++) {
+      try {
+        const frames = roots[i].querySelectorAll ? roots[i].querySelectorAll('iframe') : [];
+        for (const frame of frames) {
+          if (roots.length >= 16) break;
+          try { add(frame.contentDocument); } catch (_) {}
+        }
+      } catch (_) {}
+    }
+    for (const root of roots) {
+      try {
+        let node = root.getElementById && root.getElementById(wanted);
+        if (!node && root.querySelector) {
+          node = root.querySelector(
+            'img[id="amc_persisted_snapshot_ext_' + SERIAL + '"],'
+            + 'img[id="amc_persisted_snapshot_int_' + SERIAL + '"]'
+          );
+        }
+        const src = node && (node.getAttribute('src') || node.src || '');
+        if (typeof src === 'string' && src.startsWith(PREFIX)) {
+          return {
+            data_url:src,
+            revision:Number.parseInt(node.getAttribute('data-amc-revision') || '0', 10) || 0
+          };
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  function paintBlob(blob) {
+    return new Promise((resolve) => {
+      const canvas = document.getElementById(CANVAS_ID);
+      const ctx = canvas && canvas.getContext && canvas.getContext('2d');
+      if (!canvas || !ctx || !(blob instanceof Blob)) { resolve(false); return; }
+      const url = URL.createObjectURL(blob);
+      const image = new Image();
+      image.onload = () => {
+        try {
+          ctx.save();
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(image, 0, 0, image.naturalWidth, image.naturalHeight,
+                        0, 0, canvas.width, canvas.height);
+          ctx.restore();
+          const embedded = document.getElementById(EMBEDDED_ID);
+          if (embedded) embedded.src = url;
+          resolve(true);
+        } catch (_) { resolve(false); }
+        finally { setTimeout(() => { try { URL.revokeObjectURL(url); } catch (_) {} }, 1000); }
+      };
+      image.onerror = () => { try { URL.revokeObjectURL(url); } catch (_) {}; resolve(false); };
+      image.src = url;
+    });
+  }
+
+  let userTouched = false;
+  function protectUserDrawing() {
+    const canvas = document.getElementById(CANVAS_ID);
+    if (canvas) canvas.addEventListener('pointerdown', () => { userTouched = true; }, true);
+  }
+
+  async function hydrateWithoutKernelRoundTrip() {
+    if (HAS_PYTHON_SEED) {
+      // A one-time explicit legacy recovery already placed the source in this
+      // output. Move it to IndexedDB for all later opens without duplicating it.
+      try {
+        const embedded = document.getElementById(EMBEDDED_ID);
+        const src = embedded && embedded.src;
+        if (src && src.startsWith(PREFIX)) await cacheDataUrl(src, 0);
+      } catch (_) {}
+      return;
+    }
+
+    setState('Restaurando copia local…', 'saving');
+    let cached = null;
+    try { cached = await readCached(); } catch (_) { cached = null; }
+    if (cached && cached.blob instanceof Blob && cached.blob.size && !userTouched) {
+      if (await paintBlob(cached.blob)) {
+        setState('✓ Board restaurado localmente', 'saved');
+        return;
+      }
+    }
+
+    // Migration path for the previous small localStorage cache.
+    const old = await oldV7LocalStoragePayload();
+    if (old && !userTouched) {
+      const blob = await dataUrlToBlob(old.data_url);
+      if (blob && await paintBlob(blob)) {
+        cacheDataUrl(old.data_url, old.revision);
+        setState('✓ Board restaurado y migrado', 'saved');
+        return;
+      }
+    }
+
+    // Fast fallback when the old notebook carrier is already mounted.
+    const mounted = mountedCarrierDataUrl();
+    if (mounted && !userTouched) {
+      const blob = await dataUrlToBlob(mounted.data_url);
+      if (blob && await paintBlob(blob)) {
+        cacheDataUrl(mounted.data_url, mounted.revision);
+        setState('✓ Board restaurado desde salida existente', 'saved');
+        return;
+      }
+    }
+
+    setState('Sin copia local. Usa board("' + SERIAL + '", recuperar=True) una vez.', 'error');
+  }
+
+  function responseData(answer) {
+    return answer && answer.data && typeof answer.data === 'object' ? answer.data : (answer || {});
+  }
+
+  function installWriter() {
+    try {
+      if (!window.google || !google.colab || !google.colab.kernel) return;
+      const kernel = google.colab.kernel;
+      const previous = kernel.invokeFunction;
+      if (typeof previous !== 'function') return;
+      const installed = previous.__amcBoardV8Callbacks || {};
+      if (installed[CALLBACK]) return;
+      const wrapper = async function(...args) {
+        const answer = await previous.apply(this, args);
+        try {
+          if (args[0] === CALLBACK) {
+            const callArgs = args[1] || [];
+            const dataUrl = callArgs[0] || '';
+            const requested = Number(callArgs[1] || 0) || 0;
+            const result = responseData(answer);
+            const revision = Math.max(requested, Number(result && result.revision || 0) || 0);
+            // Do not await: persistence remains responsive while the browser
+            // writes the Blob in the background.
+            cacheDataUrl(dataUrl, revision);
+          }
+        } catch (_) {}
+        return answer;
+      };
+      wrapper.__amcBoardV8Callbacks = Object.assign({}, installed, {[CALLBACK]:true});
+      kernel.invokeFunction = wrapper;
+    } catch (_) {}
+  }
+
+  protectUserDrawing();
+  installWriter();
+  // The original renderer lays out the canvas on setTimeout(..., 0). Start
+  // after it, so the Blob is drawn at the final physical canvas dimensions.
+  setTimeout(() => { hydrateWithoutKernelRoundTrip(); }, 80);
+})();
+</script>
+'''
+    return (
+        template.replace("__AMC_SERIAL_JSON__", json.dumps(_sanitize_serial(serial)))
+        .replace("__AMC_CALLBACK_JSON__", json.dumps(callback_name))
+        .replace("__AMC_HAS_SEED__", "true" if has_python_seed else "false")
+    )
+
+
+# Keep the proven canvas UI but never inject a normal PNG into its HTML. The
+# PNG is either restored by the browser-only v8 cache or supplied once via the
+# explicit legacy recovery option.
+def _render_board_html(serial, initial_data_url, initial_revision, callback_name):
+    core = _RENDER_BOARD_HTML_CORE(
+        serial,
+        initial_data_url or "",
+        initial_revision,
+        callback_name,
+    )
+    return core + _instant_board_client_script(
+        serial,
+        callback_name,
+        has_python_seed=bool(initial_data_url),
+    )
+
+
+def board(serial="board", recuperar=False):
+    """
+    Open a board without moving its PNG through the Colab kernel.
+
+    Normal use:
+        board("alpha")
+    First migration/open in a browser with no IndexedDB copy:
+        board("alpha", recuperar=True)
+    """
+    _require_colab()
+    if not _BOARDS_INITIALIZED:
+        get_boards()
+
+    serial = _sanitize_serial(serial)
+    callback_name = _ensure_callback_registered(serial)
+    record = _find_board_record(serial)
+
+    # Deliberately keep this empty during normal use. Sending a multi-megabyte
+    # Base64 in display(HTML(...)) is the source of the old slow board() call.
+    initial_data_url = ""
+
+    if bool(recuperar):
+        # This is intentionally opt-in: it may read a large notebook once, but
+        # the resulting image is immediately migrated to IndexedDB by v8.
+        if not (record and record.get("png_b64")):
+            record = _legacy_load_one_board_payload(serial)
+        if record and record.get("png_b64"):
+            initial_data_url = "data:image/png;base64," + record["png_b64"]
+        elif not record:
+            local = _file_to_dataurl(f"/content/pizarra_cell_{serial}.png")
+            if local:
+                initial_data_url = local
+                record = _upsert_board_record(serial, local, 1)
+
+    initial_revision = int((record or {}).get("revision", 0) or 0)
+    html = _render_board_html(serial, initial_data_url, initial_revision, callback_name)
+    _BOARD_HANDLES[serial] = display(HTML(html), display_id=True)
+
+
+# Make the mode visible in diagnostics without reading any image or notebook.
+_diagnostico_boards_v7 = diagnostico_boards
+
+def diagnostico_boards():
+    data = _diagnostico_boards_v7()
+    data.update({
+        "version_hidratacion": _INSTANT_CACHE_VERSION,
+        "carga_board_normal": "IndexedDB del navegador; PNG no pasa por Python",
+        "recuperacion_legacy": 'board("serial", recuperar=True)',
+    })
+    return data
