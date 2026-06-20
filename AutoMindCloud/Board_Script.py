@@ -77,55 +77,145 @@ def _read_notebook_json() -> dict:
         return {}
 
 
-def _extract_all_boards_from_notebook(nb: dict) -> List[dict]:
-    """Obtiene el último carrier PNG válido de cada board del .ipynb."""
-    if not isinstance(nb, dict):
-        return []
+def _snapshot_pattern_for_serial(serial: Optional[str] = None) -> re.Pattern:
+    """Busca carriers persistentes y el snapshot embebido del output visible.
 
-    image_pattern = re.compile(
+    ``serial=None`` sirve para el listado completo. Cuando se entrega un serial,
+    la búsqueda es puntual: board("123") no necesita haber llamado get_boards().
+    """
+    if serial is None:
+        id_pattern = (
+            r"(?:amc_persisted_snapshot_(?:ext_|int_)?(?P<serial>[A-Za-z0-9_]+)"
+            r"|amc_board_embedded_snapshot_(?P<embedded_serial>[A-Za-z0-9_]+))"
+        )
+    else:
+        clean = _sanitize_serial(serial)
+        exact = re.escape(clean)
+        id_pattern = (
+            r"(?:amc_persisted_snapshot_(?:ext_|int_)?" + exact
+            + r"|amc_board_embedded_snapshot_" + exact + r")"
+        )
+
+    return re.compile(
         r'<img\b'
-        r'(?=[^>]*\bid=["\']amc_persisted_snapshot_(?:ext_|int_)?(?P<serial>[A-Za-z0-9_]+)["\'])'
+        r'(?=[^>]*\bid=["\']' + id_pattern + r'["\'])'
         r'(?=[^>]*\bsrc=["\'](?P<src>data:image/png;base64,[^"\']+)["\'])'
+        r'(?=[^>]*\bdata-amc-revision=["\'](?P<revision>\d+)["\'])?'
         r'[^>]*>',
         re.IGNORECASE | re.DOTALL,
     )
 
+
+def _select_newer_snapshot(previous: Optional[dict], candidate: dict) -> dict:
+    """Elige mayor revisión; en empate, el output más reciente del notebook."""
+    if previous is None:
+        return candidate
+
+    old_key = (
+        int(previous.get("revision", 0) or 0),
+        int(previous.get("source_cell", -1) or -1),
+        int(previous.get("source_output", -1) or -1),
+    )
+    new_key = (
+        int(candidate.get("revision", 0) or 0),
+        int(candidate.get("source_cell", -1) or -1),
+        int(candidate.get("source_output", -1) or -1),
+    )
+    return candidate if new_key >= old_key else previous
+
+
+def _extract_all_boards_from_notebook(nb: dict) -> List[dict]:
+    """Obtiene el snapshot más nuevo de cada board guardado en el .ipynb."""
+    if not isinstance(nb, dict):
+        return []
+
+    image_pattern = _snapshot_pattern_for_serial()
     latest: Dict[str, dict] = {}
+
     for cell_index, cell in enumerate(nb.get("cells", [])):
         if not isinstance(cell, dict):
             continue
-
         for output_index, out in enumerate(cell.get("outputs", [])):
             if not isinstance(out, dict):
                 continue
-
             data = out.get("data", {}) or {}
-            candidates = [
-                _mime_to_text(data[mime])
-                for mime in ("text/html", "text/plain", "text")
-                if mime in data
-            ]
-
-            for html in candidates:
+            for mime in ("text/html", "text/plain", "text"):
+                if mime not in data:
+                    continue
+                html = _mime_to_text(data[mime])
                 for match in image_pattern.finditer(html):
-                    serial = _sanitize_serial(match.group("serial"))
-                    data_url = match.group("src")
+                    serial = _sanitize_serial(
+                        match.groupdict().get("serial")
+                        or match.groupdict().get("embedded_serial")
+                        or "board"
+                    )
                     try:
-                        png_b64 = data_url.split(",", 1)[1]
+                        png_b64 = match.group("src").split(",", 1)[1]
                         base64.b64decode(png_b64, validate=True)
+                        revision = int(match.groupdict().get("revision") or 0)
                     except Exception:
                         continue
 
-                    latest[serial] = {
+                    candidate = {
                         "serial": serial,
                         "png_b64": png_b64,
-                        "revision": 0,
+                        "revision": revision,
                         "updated_at": 0.0,
                         "source_cell": cell_index,
                         "source_output": output_index,
                     }
+                    latest[serial] = _select_newer_snapshot(latest.get(serial), candidate)
 
     return list(latest.values())
+
+
+def _recover_single_board_from_notebook(serial: str) -> Optional[dict]:
+    """Recupera únicamente la board solicitada, sin poblar todas las demás.
+
+    La API get_ipynb de Colab entrega el documento completo, pero aquí se
+    analiza sólo el carrier/snapshot del serial pedido y no se reconstruye la
+    lista total de boards. Esta función se usa automáticamente desde board().
+    """
+    serial = _sanitize_serial(serial)
+    notebook = _read_notebook_json()
+    if not isinstance(notebook, dict):
+        return None
+
+    image_pattern = _snapshot_pattern_for_serial(serial)
+    latest: Optional[dict] = None
+
+    for cell_index, cell in enumerate(notebook.get("cells", [])):
+        if not isinstance(cell, dict):
+            continue
+        for output_index, out in enumerate(cell.get("outputs", [])):
+            if not isinstance(out, dict):
+                continue
+            data = out.get("data", {}) or {}
+            for mime in ("text/html", "text/plain", "text"):
+                if mime not in data:
+                    continue
+                html = _mime_to_text(data[mime])
+                for match in image_pattern.finditer(html):
+                    try:
+                        png_b64 = match.group("src").split(",", 1)[1]
+                        base64.b64decode(png_b64, validate=True)
+                        revision = int(match.groupdict().get("revision") or 0)
+                    except Exception:
+                        continue
+
+                    candidate = {
+                        "serial": serial,
+                        "png_b64": png_b64,
+                        "revision": revision,
+                        "updated_at": 0.0,
+                        "source_cell": cell_index,
+                        "source_output": output_index,
+                    }
+                    latest = _select_newer_snapshot(latest, candidate)
+
+    if latest is not None:
+        boards_guardados[serial] = dict(latest)
+    return latest
 
 
 def _find_board_record(serial: str) -> Optional[dict]:
@@ -869,28 +959,44 @@ def _ensure_callback_registered(serial: str) -> str:
     return callback_name
 
 
-# Recupera snapshots existentes sólo una vez al ejecutar esta celda.
-recargar_boards_desde_notebook(conservar_runtime=False)
+# No se recargan todas las boards al importar el módulo. Así, en notebooks
+# grandes no se procesa todo el .ipynb si sólo necesitas abrir una board. La
+# recuperación puntual ocurre automáticamente al llamar board("serial").
 
 
-def board(serial: str = "board"):
-    """Muestra una pizarra editable y preparada para persistencia optimizada."""
+def board(serial: str = "board") -> None:
+    """Muestra una pizarra y recupera su Base64 automáticamente si existe.
+
+    No necesitas ejecutar get_boards() antes. Si la board no está en memoria ni
+    en el respaldo local del runtime, busca sólo ese serial dentro del .ipynb.
+    La función no retorna el DisplayHandle para que Colab no imprima
+    ``<DisplayHandle display_id=...>`` debajo de la pizarra.
+    """
     serial = _sanitize_serial(serial)
     callback_name = _ensure_callback_registered(serial)
     png_path = os.path.join(_RUNTIME_PNG_DIR, f"pizarra_cell_{serial}.png")
 
     record = _find_board_record(serial)
     initial_data_url = ""
+
     if record and record.get("png_b64"):
         initial_data_url = "data:image/png;base64," + record["png_b64"]
     else:
+        # Primero se intenta el archivo local: es inmediato si sigues en el
+        # mismo runtime. Si no existe, se hace una única recuperación puntual
+        # desde los outputs serializados del notebook.
         initial_data_url = _file_to_dataurl(png_path)
         if initial_data_url:
             record = _upsert_board_record(serial, initial_data_url, 1)
+        else:
+            record = _recover_single_board_from_notebook(serial)
+            if record and record.get("png_b64"):
+                initial_data_url = "data:image/png;base64," + record["png_b64"]
+                _write_runtime_png(serial, record["png_b64"])
 
     initial_revision = int(record.get("revision", 0) or 0) if record else 0
 
-    # Carrier mínimo recuperable. No hace get_ipynb() ni espera confirmación.
+    # Carrier mínimo recuperable. No hace una segunda lectura de get_ipynb().
     _update_carrier_output(serial, initial_data_url, initial_revision)
 
     html = _render_board_html(
@@ -899,16 +1005,16 @@ def board(serial: str = "board"):
         initial_revision,
         callback_name,
     )
-    handle = display(HTML(html), display_id=True)
-    _BOARD_HANDLES[serial] = handle
-    return handle
+    _BOARD_HANDLES[serial] = display(HTML(html), display_id=True)
+    # No retornar el handle: evita la línea <DisplayHandle display_id=...>.
 
 
 # USO
-# 1) Ejecuta esta celda completa una sola vez por runtime.
-# 2) En otra celda usa: board("numero_123")
+# 1) Ejecuta/importa este módulo una vez por runtime.
+# 2) En otra celda usa directamente: board("numero_123")
+#    La función encuentra automáticamente el Base64 de esa board si existe.
 # 3) Dibuja normalmente. El snapshot se envía tras ~0.9 s sin cambios.
 # 4) Al cambiar de pestaña, Colab actualiza el output visual y solicita guardar.
-# 5) Tras reconectar runtime: ejecuta esta celda y luego board("numero_123").
-# 6) get_boards() lista las boards sin releer el notebook; usa
-#    get_boards(recargar=True) sólo cuando quieras forzar una recuperación.
+# 5) Tras reconectar runtime, vuelve a importar el módulo y usa board("numero_123").
+# 6) get_boards() lista sólo boards ya cargadas en memoria. Para inventariar
+#    todas las guardadas en outputs usa get_boards(recargar=True).
