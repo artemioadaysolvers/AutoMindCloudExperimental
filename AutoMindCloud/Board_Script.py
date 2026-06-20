@@ -3,6 +3,8 @@ AutoMindCloud.Board_Script
 ==========================
 Pizarra persistente para Google Colab.
 
+Versión 21: corrección de guardado repetido sobre boards existentes.
+
 Uso único:
     from AutoMindCloud.Board_Script import *
     board("alpha")
@@ -49,12 +51,11 @@ except Exception:
 # -----------------------------------------------------------------------------
 # Estado único del módulo
 # -----------------------------------------------------------------------------
-_VERSION = "20.0"
+_VERSION = "21.0"
 _PREFIX = "amc_persisted_snapshot_"
 _DB_NAME = "AutoMindBoardCacheV20"
 _DB_STORE = "boards"
 _MAX_PNG_BYTES = 48 * 1024 * 1024
-_SAVE_THROTTLE_SECONDS = 0.35
 
 # Compatibilidad con scripts anteriores.
 boards_guardados: List[Dict[str, Any]] = []
@@ -64,7 +65,6 @@ _RECORDS: Dict[str, Dict[str, Any]] = {}
 _CARRIER_HANDLES: Dict[str, Any] = {}
 _REGISTERED: set[str] = set()
 _LOCK = threading.RLock()
-_LAST_NOTEBOOK_SAVE = 0.0
 
 
 # -----------------------------------------------------------------------------
@@ -174,6 +174,10 @@ def _read_runtime_copy(serial: str) -> str:
 # -----------------------------------------------------------------------------
 # Respaldo portable dentro del .ipynb
 # -----------------------------------------------------------------------------
+def _carrier_display_id(serial: str) -> str:
+    return f"amc.board.v21.carrier.{_sanitize_serial(serial)}"
+
+
 def _carrier_html(record: Dict[str, Any]) -> str:
     serial = _sanitize_serial(record["serial"])
     src = html.escape(_record_data_url(record), quote=True)
@@ -186,31 +190,74 @@ src="{src}" alt="AutoMind persisted board" style="width:1px;height:1px;display:b
 </div>'''
 
 
-def _update_carrier(record: Dict[str, Any]) -> bool:
-    """Escribe sólo el carrier. Nunca toca el canvas visible del usuario."""
-    serial = record["serial"]
-    markup = _carrier_html(record)
-    try:
-        handle = _CARRIER_HANDLES.get(serial)
-        if handle is None:
-            _CARRIER_HANDLES[serial] = display(HTML(markup), display_id=True)
-        else:
-            handle.update(HTML(markup))
+def _carrier_placeholder_html(serial: str) -> str:
+    serial = _sanitize_serial(serial)
+    return f'''<div aria-hidden="true" data-amc-board-carrier="{_VERSION}"
+style="position:fixed;left:-10000px;top:-10000px;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none;">
+<img id="{_PREFIX}{serial}" data-amc-revision="0" data-amc-sha256="" src="" alt="AutoMind board placeholder" style="width:1px;height:1px;display:block;border:0" />
+</div>'''
+
+
+def _ensure_carrier_handle(serial: str) -> bool:
+    """Crea el output carrier ANTES de editar.
+
+    Es decisivo para Colab: un callback posterior sólo actualiza este output
+    ya asociado a la celda de board(), en lugar de intentar crear una salida
+    nueva desde un callback asíncrono. El placeholder no contiene PNG y nunca
+    oculta un board guardado previamente.
+    """
+    serial = _sanitize_serial(serial)
+    if serial in _CARRIER_HANDLES:
         return True
+    try:
+        handle = display(
+            HTML(_carrier_placeholder_html(serial)),
+            display_id=_carrier_display_id(serial),
+        )
+        _CARRIER_HANDLES[serial] = handle
+        return handle is not None
     except Exception:
         return False
 
 
-def _request_notebook_save() -> bool:
-    """Solicita save sin convertir una respuesta tardía en un fallo del PNG."""
-    global _LAST_NOTEBOOK_SAVE
-    now = time.monotonic()
-    if now - _LAST_NOTEBOOK_SAVE < _SAVE_THROTTLE_SECONDS:
-        return False
-    _LAST_NOTEBOOK_SAVE = now
+def _update_carrier(record: Dict[str, Any]) -> bool:
+    """Actualiza el carrier existente y nunca toca el canvas visible."""
+    serial = _sanitize_serial(record["serial"])
+    markup = _carrier_html(record)
     try:
-        # Permite que DisplayHandle.update llegue al modelo frontend antes del save.
-        time.sleep(0.10)
+        if not _ensure_carrier_handle(serial):
+            return False
+        handle = _CARRIER_HANDLES.get(serial)
+        if handle is None:
+            return False
+        handle.update(HTML(markup))
+        return True
+    except Exception:
+        # Último recurso: publicar una salida con el mismo display_id. Esto
+        # permite recuperarse si Colab invalidó un DisplayHandle antiguo.
+        try:
+            handle = display(HTML(markup), display_id=_carrier_display_id(serial))
+            _CARRIER_HANDLES[serial] = handle
+            return handle is not None
+        except Exception:
+            return False
+
+
+def _request_notebook_save() -> bool:
+    """Pide dos saves reales después de actualizar el carrier.
+
+    No hay throttle: omitir un save tras un segundo trazo era precisamente la
+    causa de que un board previamente guardado no persistiera su nueva versión.
+    """
+    try:
+        # Da una vuelta al loop de mensajes para que update_display_data llegue
+        # al modelo del notebook antes de solicitar la serialización.
+        time.sleep(0.16)
+        try:
+            _colab_message.blocking_request("notebook.save", {})
+        except TypeError:
+            _colab_message.blocking_request("notebook.save", request="")
+        time.sleep(0.16)
         try:
             _colab_message.blocking_request("notebook.save", {})
         except TypeError:
@@ -356,13 +403,12 @@ def _make_save_callback(serial: str):
             # mientras este nuevo runtime todavía cree que está en r0. Antes de
             # declarar conflicto, hidratamos el único board requerido.
             if current is None and base > 0:
+                # Intentamos recuperar la versión anterior, pero la ausencia de
+                # carrier NO puede bloquear el guardado de un board que el
+                # navegador ya tiene en su cache local. En ese caso la base del
+                # cliente se usa para mantener la revisión monotónica y el PNG
+                # actual se convierte en el nuevo respaldo portátil.
                 current = _restore_record(serial)
-                if current is None:
-                    return {
-                        "ok": False,
-                        "retryable": True,
-                        "error": "No se pudo verificar aún el respaldo anterior; se conservará la copia local y se reintentará.",
-                    }
 
             current_revision = int((current or {}).get("revision", 0) or 0)
             current_digest = str((current or {}).get("sha256", "") or "")
@@ -372,19 +418,16 @@ def _make_save_callback(serial: str):
             if token_text and seen.get(token_text) == digest:
                 return {"ok": True, "duplicate": True, "revision": current_revision, "sha256": current_digest}
 
-            if current is not None and base != current_revision:
-                if current_digest == digest:
-                    return {"ok": True, "duplicate": True, "revision": current_revision, "sha256": current_digest}
-                return {
-                    "ok": False,
-                    "conflict": True,
-                    "revision": current_revision,
-                    "sha256": current_digest,
-                    "error": "Hay una versión más reciente de este board. Tu copia local fue preservada y no se sobrescribió el respaldo.",
-                }
+            # El browser puede tener una copia local confirmada con rN mientras
+            # el runtime nuevo sólo alcanzó a leer un carrier anterior rN-1.
+            # Para un canvas PNG no existe una fusión semántica útil; la regla
+            # segura para una sesión personal es "el último snapshot terminado
+            # gana", con revisión siempre monótona. Nunca se bloquea un nuevo
+            # guardado sólo porque el runtime y el navegador difieren.
+            if current_digest == digest:
+                return {"ok": True, "duplicate": True, "revision": current_revision, "sha256": current_digest}
 
-            # Sin estado previo y base 0: es realmente un board nuevo.
-            revision = current_revision + 1
+            revision = max(current_revision, base) + 1
             record = {
                 "serial": serial,
                 "png_b64": png_b64,
@@ -397,19 +440,27 @@ def _make_save_callback(serial: str):
             }
             if len(record["seen"]) > 64:
                 record["seen"] = dict(list(record["seen"].items())[-64:])
-            _RECORDS[serial] = record
-            _sync_public_records()
-            _write_runtime_copy(serial, payload)
 
-            carrier_updated = _update_carrier(record)
-            _request_notebook_save()  # Estado auxiliar: no invalida el PNG ya escrito.
-            if not carrier_updated:
+            # No avanzamos el estado autoritativo del runtime si no logramos
+            # actualizar el carrier de la celda. De esa forma el reintento usa
+            # la misma base y no queda atrapado en un falso conflicto.
+            if not _update_carrier(record):
                 return {
                     "ok": False,
                     "retryable": True,
-                    "error": "El runtime recibió el PNG, pero Colab aún no confirmó el carrier. La copia local se mantiene y se reintentará.",
+                    "error": "Colab aún no aceptó actualizar el carrier; la copia local queda protegida y se reintentará.",
                 }
-            return {"ok": True, "revision": revision, "sha256": digest}
+
+            _RECORDS[serial] = record
+            _sync_public_records()
+            _write_runtime_copy(serial, payload)
+            notebook_saved = _request_notebook_save()
+            return {
+                "ok": True,
+                "revision": revision,
+                "sha256": digest,
+                "notebook_save_requested": bool(notebook_saved),
+            }
 
     return callback
 
@@ -518,7 +569,7 @@ root.querySelector('[data-a=pen]').onclick=()=>tool='pen';root.querySelector('[d
 root.querySelector('[data-a=undo]').onclick=async()=>{if(!ready||!undo.length)return;const cur=snapshot(),prev=undo.pop();if(cur)redo.push(cur);if(await paint(prev))enqueue('undo')};root.querySelector('[data-a=redo]').onclick=async()=>{if(!ready||!redo.length)return;const cur=snapshot(),next=redo.pop();if(cur)undo.push(cur);if(await paint(next))enqueue('redo')};
 root.querySelector('[data-a=download]').onclick=()=>{const a=document.createElement('a');a.href=snapshot();a.download='board_'+SERIAL+'.png';a.click();};
 window.addEventListener('resize',()=>{if(!canvas.width)return;const old=document.createElement('canvas');old.width=canvas.width;old.height=canvas.height;old.getContext('2d').drawImage(canvas,0,0);dpr=Math.max(1,window.devicePixelRatio||1);init();ctx.drawImage(old,0,0,old.width,old.height,0,0,canvas.width,canvas.height);});
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'&&ready)enqueue('pestana_oculta')});window.addEventListener('pagehide',()=>{if(ready)enqueue('salida')});
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'&&ready)enqueue('pestana_oculta')});window.addEventListener('pagehide',()=>{if(ready)enqueue('salida')});window.addEventListener('blur',()=>{if(ready)setTimeout(()=>enqueue('perdida_foco'),0)});
 void restore();
 })();
 </script></div>'''
@@ -552,8 +603,11 @@ def board(serial: str = "board") -> None:
     _require_colab()
     serial = _sanitize_serial(serial)
     save_callback, restore_callback = _ensure_callbacks(serial)
-    # No crear un carrier vacío aquí: podría ocultar un snapshot viejo en un
-    # notebook virtualizado. El carrier se crea únicamente tras guardar PNG real.
+
+    # Establece primero un carrier vacío asociado a ESTA ejecución de celda.
+    # No contiene imagen y por eso no borra ni eclipsa carriers antiguos; sólo
+    # deja preparado el DisplayHandle que los guardados posteriores actualizarán.
+    _ensure_carrier_handle(serial)
     display(HTML(_board_html(serial, uuid.uuid4().hex, save_callback, restore_callback)))
 
 
