@@ -1154,3 +1154,235 @@ def _upsert_board_record(serial: str, data_url_png: str, client_revision=None):
         record.clear()
         record.update(fresh)
     return fresh
+# =============================================================================
+# DISCOVERY HYBRID OVERRIDE (v6) — CORRECTO DESPUÉS DE RECONECTAR EL RUNTIME
+# -----------------------------------------------------------------------------
+# El escaneo rápido del DOM es útil mientras los outputs están montados, pero
+# Colab virtualiza outputs antiguos después de recargar/reconectar. En ese
+# estado los <img> carrier siguen guardados dentro del .ipynb, aunque no estén
+# presentes en document/window.top, y el escaneo rápido devuelve [].
+#
+# Estrategia:
+#   1. modo="auto" (predeterminado): DOM rápido primero.
+#   2. si el DOM no ve ningún carrier, se usa automáticamente el lector fiable
+#      de exito_board: get_ipynb + extracción exclusiva de los carriers Board.
+#   3. el JSON completo se descarta inmediatamente; en memoria sólo quedan los
+#      datos de los boards. La ruta completa se activa sólo ante ese fallo del
+#      DOM, no en cada guardado ni en cada apertura normal.
+# =============================================================================
+
+_FAST_DISCOVERY_VERSION = "6-hybrid-authoritative-fallback"
+_LAST_DISCOVERY_SOURCE = "none"
+_AUTO_LEGACY_FALLBACK_DONE = False
+
+
+def _legacy_scan_entire_notebook(conservar_runtime=True):
+    """Lector autoritativo usado por exito_board; no conserva el .ipynb completo."""
+    global notebook_json, _LAST_DISCOVERY_SOURCE
+    nb = _read_notebook_json()
+    recovered = _extract_all_boards_from_notebook(nb)
+
+    # Evita dejar en RAM un notebook grande con viewers/outputs ajenos.
+    notebook_json = {}
+    _LAST_DISCOVERY_SOURCE = "ipynb"
+    return _merge_board_records(recovered, conservar_runtime=conservar_runtime)
+
+
+def _legacy_load_one_board_payload(serial: str):
+    """Obtiene un solo board desde el .ipynb cuando su output no está montado."""
+    global notebook_json, _LAST_DISCOVERY_SOURCE
+    serial = _sanitize_serial(serial)
+    nb = _read_notebook_json()
+    recovered = _extract_all_boards_from_notebook(nb)
+    notebook_json = {}
+    _LAST_DISCOVERY_SOURCE = "ipynb-single-board"
+
+    # Fusionar todos mantiene el catálogo coherente si el fallback ya tuvo que
+    # leer el documento. Sólo se retiene cada PNG de Board, nunca otros outputs.
+    _merge_board_records(recovered, conservar_runtime=True)
+    return _find_board_record(serial)
+
+
+def recargar_boards_desde_notebook(conservar_runtime: bool = True, modo: str = "auto"):
+    """
+    Recarga el catálogo de boards.
+
+    modo="auto" (predeterminado)
+        Escanea el DOM y, si Colab no ha montado los outputs persistidos,
+        cambia automáticamente a la lectura autoritativa del .ipynb.
+
+    modo="rapido"
+        Sólo DOM. Útil si se necesita evitar por completo get_ipynb, pero puede
+        devolver [] justo después de reconectar debido a la virtualización de
+        outputs de Colab.
+
+    modo="compatibilidad" / "completo"
+        Fuerza la lectura autoritativa usada por exito_board.
+    """
+    global _AUTO_LEGACY_FALLBACK_DONE, _LAST_DISCOVERY_SOURCE
+    mode = str(modo or "auto").strip().lower()
+
+    if mode in {"compatibilidad", "legacy", "ipynb", "completo", "seguro"}:
+        _AUTO_LEGACY_FALLBACK_DONE = True
+        return _legacy_scan_entire_notebook(conservar_runtime=conservar_runtime)
+
+    recovered = _fast_scan_js(include_payload=False)
+    if recovered:
+        _LAST_DISCOVERY_SOURCE = "frontend"
+        return _merge_board_records(recovered, conservar_runtime=conservar_runtime)
+
+    # Esta es la corrección principal. El resultado vacío del DOM no significa
+    # que no existan boards: puede significar que Colab aún no montó esas celdas.
+    if mode in {"auto", "hibrido", "hybrid"}:
+        _AUTO_LEGACY_FALLBACK_DONE = True
+        return _legacy_scan_entire_notebook(conservar_runtime=conservar_runtime)
+
+    _LAST_DISCOVERY_SOURCE = "frontend-empty"
+    return _merge_board_records([], conservar_runtime=conservar_runtime)
+
+
+def _load_one_board_payload(serial: str):
+    """Carga el PNG de un board desde DOM y, si hace falta, desde el .ipynb."""
+    serial = _sanitize_serial(serial)
+    rows = _fast_scan_js(target_serial=serial, include_payload=True)
+    if rows:
+        item = max(rows, key=lambda x: int(x.get("revision", 0) or 0))
+        record = _upsert_board_record(
+            serial,
+            "data:image/png;base64," + item.get("png_b64", ""),
+            item.get("revision", 0),
+        )
+        if record:
+            return record
+
+    # El carrier puede estar guardado pero no montado por el virtualizador de
+    # Colab. Ésta es exactamente la ruta que hacía funcionar exito_board.
+    return _legacy_load_one_board_payload(serial)
+
+
+def _snapshot_from_notebook(serial: str) -> str:
+    """Devuelve un PNG guardado sin asumir que el carrier esté visible en DOM."""
+    serial = _sanitize_serial(serial)
+    record = _find_board_record(serial)
+    if record and record.get("png_b64"):
+        return "data:image/png;base64," + record["png_b64"]
+
+    record = _load_one_board_payload(serial)
+    if record and record.get("png_b64"):
+        return "data:image/png;base64," + record["png_b64"]
+    return ""
+
+
+def listar_boards(incluir_base64: bool = False, recargar: bool = False, modo: str = "auto"):
+    """Lista boards; cargar Base64 sigue siendo opcional."""
+    if recargar:
+        recargar_boards_desde_notebook(conservar_runtime=True, modo=modo)
+
+    if incluir_base64:
+        # Preferir el DOM si está disponible, pero no borrar datos recuperados
+        # desde el fallback autoritativo cuando el DOM aún está virtualizado.
+        loaded = _fast_scan_js(include_payload=True)
+        if loaded:
+            _merge_board_records(loaded, conservar_runtime=True)
+
+    rows = []
+    for item in boards_guardados:
+        b64 = item.get("png_b64", "")
+        estimated = int(item.get("bytes_png_aprox", 0) or 0)
+        if b64:
+            estimated = len(b64) * 3 // 4
+        row = {
+            "serial": item.get("serial"),
+            "bytes_png_aprox": estimated,
+            "revision": item.get("revision", 0),
+            "updated_at": item.get("updated_at", 0),
+            "source_cell": item.get("source_cell", "frontend"),
+            "source_output": item.get("source_output", "carrier"),
+        }
+        if incluir_base64:
+            row["png_b64"] = b64
+        rows.append(row)
+    return rows
+
+
+def get_boards(incluir_base64: bool = False, recargar: bool = True, modo: str = "auto"):
+    """
+    Carga los boards guardados antes de abrirlos.
+
+    Uso normal, también tras desconectar/reconectar el runtime:
+        from AutoMindCloud.Board_Script import *
+        get_boards()
+
+    No devuelve [] por depender únicamente de outputs actualmente visibles:
+    si el DOM está virtualizado, pasa automáticamente al lector del .ipynb.
+    """
+    global _BOARDS_INITIALIZED
+    _require_colab()
+
+    if recargar or not _BOARDS_INITIALIZED:
+        recargar_boards_desde_notebook(
+            conservar_runtime=True,
+            modo=modo,
+        )
+        _BOARDS_INITIALIZED = True
+
+    return listar_boards(incluir_base64=incluir_base64, recargar=False)
+
+
+def diagnostico_boards():
+    """Diagnóstico que permite confirmar si se usó DOM o fallback del .ipynb."""
+    frontend = _fast_scan_js(include_payload=False)
+    return {
+        "modo_carga_predeterminado": "auto: DOM y fallback autoritativo cuando el DOM está vacío",
+        "version_descubrimiento": _FAST_DISCOVERY_VERSION,
+        "origen_ultima_carga": _LAST_DISCOVERY_SOURCE,
+        "error_ultimo_escaneo_rapido": _LAST_FAST_DISCOVERY_ERROR,
+        "fallback_compatibilidad_activado": bool(_AUTO_LEGACY_FALLBACK_DONE),
+        "boards_detectados_en_frontend": frontend,
+        "boards_en_runtime": listar_boards(incluir_base64=False, recargar=False),
+        "notebook_json_en_memoria": bool(notebook_json),
+    }
+
+
+def board(serial: str = "board"):
+    """Abre un board y lo rehidrata aunque su output esté virtualizado."""
+    _require_colab()
+    if not _BOARDS_INITIALIZED:
+        get_boards(modo="auto")
+
+    serial = _sanitize_serial(serial)
+    callback_name = _ensure_callback_registered(serial)
+    png_path = f"/content/pizarra_cell_{serial}.png"
+
+    record = _find_board_record(serial)
+    initial_data_url = (
+        "data:image/png;base64," + record["png_b64"]
+        if record and record.get("png_b64") else ""
+    )
+    if not initial_data_url:
+        initial_data_url = _snapshot_from_notebook(serial) or _file_to_dataurl(png_path)
+
+    if initial_data_url and (record is None or not record.get("png_b64")):
+        record = _upsert_board_record(
+            serial,
+            initial_data_url,
+            (record or {}).get("revision", 0),
+        )
+
+    initial_revision = int((record or {}).get("revision", 0) or 0)
+
+    # Abrir un board existente no crea ni sobrescribe su carrier. El carrier se
+    # modifica sólo cuando el callback recibe un dibujo nuevo.
+    html = _render_board_html(serial, initial_data_url, initial_revision, callback_name)
+    _BOARD_HANDLES[serial] = display(HTML(html), display_id=True)
+
+
+__all__ = [
+    "board",
+    "get_boards",
+    "listar_boards",
+    "recargar_boards_desde_notebook",
+    "diagnostico_boards",
+    "boards_guardados",
+    "notebook_json",
+]
