@@ -41,6 +41,7 @@ _SNAPSHOT_HANDLES: Dict[str, object] = {}
 _BOARD_HANDLES: Dict[str, object] = {}
 _REGISTERED_CALLBACKS = set()
 _LAST_NOTEBOOK_SAVE_AT = 0.0
+_PRELOAD_RECOVERY_DONE = False
 
 
 def _sanitize_serial(value: str) -> str:
@@ -276,6 +277,30 @@ def recargar_boards_desde_notebook(conservar_runtime: bool = True) -> List[dict]
         boards_guardados.update({item["serial"]: dict(item) for item in recovered})
 
     return [dict(boards_guardados[key]) for key in sorted(boards_guardados)]
+
+
+def _preload_boards_before_output_replacement() -> List[dict]:
+    """Recupera snapshots una vez, antes de que una celda board() borre su output.
+
+    En Colab, al ejecutar de nuevo la celda que contiene ``board("123")``,
+    el frontend limpia el output anterior *antes* de que Python entre a board().
+    Por eso la recuperación puntual dentro de board() puede llegar tarde. Esta
+    precarga se ejecuta al importar el módulo: lee get_ipynb una única vez,
+    extrae sólo los carriers/snapshots de boards y descarta el JSON completo.
+    """
+    global _PRELOAD_RECOVERY_DONE
+
+    if _PRELOAD_RECOVERY_DONE:
+        return [dict(boards_guardados[key]) for key in sorted(boards_guardados)]
+
+    _PRELOAD_RECOVERY_DONE = True
+    try:
+        return recargar_boards_desde_notebook(conservar_runtime=True)
+    except Exception as exc:
+        # La board aún puede abrirse vacía o recuperarse desde /content.
+        # No interrumpimos la importación por una falla transitoria de Colab.
+        print("[boards] Precarga de snapshots no disponible:", repr(exc))
+        return [dict(boards_guardados[key]) for key in sorted(boards_guardados)]
 
 
 def listar_boards(incluir_base64: bool = False, recargar: bool = False) -> List[dict]:
@@ -959,16 +984,20 @@ def _ensure_callback_registered(serial: str) -> str:
     return callback_name
 
 
-# No se recargan todas las boards al importar el módulo. Así, en notebooks
-# grandes no se procesa todo el .ipynb si sólo necesitas abrir una board. La
-# recuperación puntual ocurre automáticamente al llamar board("serial").
+# Esta precarga es deliberada y ocurre UNA sola vez al importar el módulo.
+# Es necesaria porque Colab borra el output antiguo de la celda antes de
+# ejecutar de nuevo board("serial"). Sólo se conservan los PNG de boards;
+# el JSON completo del notebook se descarta inmediatamente.
+_preload_boards_before_output_replacement()
 
 
 def board(serial: str = "board") -> None:
     """Muestra una pizarra y recupera su Base64 automáticamente si existe.
 
-    No necesitas ejecutar get_boards() antes. Si la board no está en memoria ni
-    en el respaldo local del runtime, busca sólo ese serial dentro del .ipynb.
+    No necesitas ejecutar get_boards() antes: el módulo precarga los snapshots
+    al importarse, antes de que Colab pueda limpiar el output antiguo. Si por
+    alguna razón la board no quedó en esa precarga ni en /content, busca sólo
+    ese serial dentro del .ipynb como respaldo puntual.
     La función no retorna el DisplayHandle para que Colab no imprima
     ``<DisplayHandle display_id=...>`` debajo de la pizarra.
     """
