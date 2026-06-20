@@ -3,7 +3,7 @@ AutoMindCloud.Board_Script
 ==========================
 Pizarra persistente para Google Colab.
 
-Versión 21: corrección de guardado repetido sobre boards existentes.
+Versión 22: reapertura fiable de boards ya guardados.
 
 Uso único:
     from AutoMindCloud.Board_Script import *
@@ -51,7 +51,7 @@ except Exception:
 # -----------------------------------------------------------------------------
 # Estado único del módulo
 # -----------------------------------------------------------------------------
-_VERSION = "21.0"
+_VERSION = "22.0"
 _PREFIX = "amc_persisted_snapshot_"
 _DB_NAME = "AutoMindBoardCacheV20"
 _DB_STORE = "boards"
@@ -221,27 +221,32 @@ def _ensure_carrier_handle(serial: str) -> bool:
 
 
 def _update_carrier(record: Dict[str, Any]) -> bool:
-    """Actualiza el carrier existente y nunca toca el canvas visible."""
+    """Publica o actualiza exclusivamente un carrier CON PNG válido.
+
+    Nunca se crea un placeholder vacío al abrir un board: ese placeholder podía
+    terminar siendo el último output de una celda re-ejecutada y ocultar la
+    única copia recuperable. El primer carrier que se emite ya contiene el PNG.
+    """
     serial = _sanitize_serial(record["serial"])
     markup = _carrier_html(record)
     try:
-        if not _ensure_carrier_handle(serial):
-            return False
         handle = _CARRIER_HANDLES.get(serial)
-        if handle is None:
-            return False
-        handle.update(HTML(markup))
-        return True
+        if handle is not None:
+            handle.update(HTML(markup))
+            return True
+
+        handle = display(HTML(markup), display_id=_carrier_display_id(serial))
+        _CARRIER_HANDLES[serial] = handle
+        return handle is not None
     except Exception:
-        # Último recurso: publicar una salida con el mismo display_id. Esto
-        # permite recuperarse si Colab invalidó un DisplayHandle antiguo.
+        # Reintenta una vez sin confiar en un DisplayHandle que Colab pudo
+        # invalidar después de una reconexión.
         try:
             handle = display(HTML(markup), display_id=_carrier_display_id(serial))
             _CARRIER_HANDLES[serial] = handle
             return handle is not None
         except Exception:
             return False
-
 
 def _request_notebook_save() -> bool:
     """Pide dos saves reales después de actualizar el carrier.
@@ -351,35 +356,42 @@ def _find_in_ipynb(serial: str) -> Optional[Dict[str, Any]]:
 
 
 def _restore_record(serial: str) -> Optional[Dict[str, Any]]:
-    """Fuente de verdad para un board: runtime -> archivo temporal -> .ipynb."""
+    """Restaura un board sin permitir que un archivo temporal viejo gane.
+
+    Orden: memoria del runtime -> carrier persistido en .ipynb -> PNG temporal.
+    El .ipynb es la fuente portátil y posee la revisión real; el archivo de
+    /content sólo es un respaldo de la sesión actual.
+    """
     serial = _sanitize_serial(serial)
     record = _RECORDS.get(serial)
     if record and record.get("png_b64"):
         return record
+
+    found = _find_in_ipynb(serial)
+    if found:
+        restored = _set_record(
+            serial,
+            found["data_url"],
+            int(found.get("revision", 0) or 0),
+            "ipynb",
+            force_equal=True,
+        )
+        if restored:
+            return restored
 
     runtime_png = _read_runtime_copy(serial)
     if runtime_png:
         restored = _set_record(serial, runtime_png, 0, "runtime_file", force_equal=True)
         if restored:
             return restored
+    return None
 
-    found = _find_in_ipynb(serial)
-    if not found:
-        return None
-    return _set_record(
-        serial, found["data_url"], int(found.get("revision", 0) or 0), "ipynb", force_equal=True
-    )
-
-
-# -----------------------------------------------------------------------------
-# Callbacks del kernel
-# -----------------------------------------------------------------------------
 def _save_name(serial: str) -> str:
-    return f"amc.board.v20.save.{_sanitize_serial(serial)}"
+    return f"amc.board.v22.save.{_sanitize_serial(serial)}"
 
 
 def _restore_name(serial: str) -> str:
-    return f"amc.board.v20.restore.{_sanitize_serial(serial)}"
+    return f"amc.board.v22.restore.{_sanitize_serial(serial)}"
 
 
 def _make_save_callback(serial: str):
@@ -501,22 +513,22 @@ def _ensure_callbacks(serial: str) -> Tuple[str, str]:
 # Interfaz HTML / JavaScript. Una instancia aislada por cada board() ejecutado.
 # -----------------------------------------------------------------------------
 def _board_html(serial: str, instance: str, save_callback: str, restore_callback: str) -> str:
-    root = f"amc_v20_root_{instance}"
-    canvas = f"amc_v20_canvas_{instance}"
-    state = f"amc_v20_state_{instance}"
+    root = f"amc_v22_root_{instance}"
+    canvas = f"amc_v22_canvas_{instance}"
+    state = f"amc_v22_state_{instance}"
 
-    template = r'''<div id="__ROOT__" class="amc-board-v20">
+    template = r'''<div id="__ROOT__" class="amc-board-v22">
 <style>
 #__ROOT__{font-family:Inter,system-ui,-apple-system,"Segoe UI",Arial,sans-serif;background:#f8fafc;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;max-width:100%;}
 #__ROOT__ *{box-sizing:border-box}#__ROOT__ .bar{padding:10px 12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#fff;border-bottom:1px solid #e2e8f0}
 #__ROOT__ button{border:1px solid #cbd5e1;background:#fff;border-radius:9px;padding:7px 10px;font-weight:650;cursor:pointer;color:#0f172a}#__ROOT__ button:hover{background:#f1f5f9}
 #__ROOT__ label{font-size:13px;color:#334155;display:flex;gap:5px;align-items:center}#__ROOT__ input[type=color]{height:32px;width:42px;border:1px solid #cbd5e1;border-radius:7px;padding:2px;background:#fff}#__ROOT__ input[type=range]{accent-color:#0f766e}
-#__ROOT__ .head{padding:9px 12px;font-size:13px;color:#475569;background:#f8fafc}#__ROOT__ .state{margin-left:8px;padding:3px 7px;border-radius:999px;background:#e2e8f0;color:#334155;font-size:11px}.amc-board-v20 .state[data-mode=saving]{background:#fef3c7;color:#92400e}.amc-board-v20 .state[data-mode=saved]{background:#dcfce7;color:#166534}.amc-board-v20 .state[data-mode=error]{background:#fee2e2;color:#991b1b}
+#__ROOT__ .head{padding:9px 12px;font-size:13px;color:#475569;background:#f8fafc}#__ROOT__ .state{margin-left:8px;padding:3px 7px;border-radius:999px;background:#e2e8f0;color:#334155;font-size:11px}.amc-board-v22 .state[data-mode=saving]{background:#fef3c7;color:#92400e}.amc-board-v22 .state[data-mode=saved]{background:#dcfce7;color:#166534}.amc-board-v22 .state[data-mode=error]{background:#fee2e2;color:#991b1b}
 #__ROOT__ canvas{display:block;width:calc(100% - 24px);height:460px;margin:12px;border:1px solid #cbd5e1;border-radius:10px;background:#fff;touch-action:none;cursor:crosshair;box-shadow:0 5px 18px rgba(15,23,42,.08)}
 </style>
 <div class="head">Board: <b>__SERIAL_HTML__</b><span id="__STATE__" class="state" data-mode="saving">Recuperando estado guardado…</span></div>
 <div class="bar"><button data-a="pen">✏️ Lápiz</button><button data-a="eraser">🧹 Borrador</button><label>Color <input data-r="color" type="color" value="#0f172a"></label><label>Grosor <input data-r="size" type="range" min="1" max="50" value="7"></label><button data-a="undo">↩ Undo</button><button data-a="redo">↪ Redo</button><button data-a="clear">🗑 Limpiar</button><button data-a="download">⬇ PNG</button></div>
-<canvas id="__CANVAS__"></canvas>
+<canvas id="__CANVAS__" data-amc-board-canvas="__SERIAL_HTML__"></canvas>
 <script>
 (()=>{
 const ROOT_ID=__ROOT_JSON__, CANVAS_ID=__CANVAS_JSON__, STATE_ID=__STATE_JSON__;
@@ -543,11 +555,47 @@ function db(){return new Promise((resolve,reject)=>{try{const r=indexedDB.open(D
 async function cacheRead(){try{const d=await db();return await new Promise((resolve,reject)=>{const r=d.transaction(STORE,'readonly').objectStore(STORE).get(key());r.onsuccess=()=>resolve(r.result||null);r.onerror=()=>reject(r.error)});}catch(_){return null}}
 async function cacheWrite(url,revision,dirty){try{const blob=await toBlob(url);if(!blob)return false;const d=await db();await new Promise((resolve,reject)=>{const r=d.transaction(STORE,'readwrite').objectStore(STORE).put({blob,revision:Number(revision)||0,dirty:!!dirty,updated:Date.now()},key());r.onsuccess=()=>resolve();r.onerror=()=>reject(r.error)});return true}catch(_){return false}}
 async function blobToUrl(blob){return new Promise(resolve=>{try{const fr=new FileReader();fr.onload=()=>resolve(String(fr.result||''));fr.onerror=()=>resolve('');fr.readAsDataURL(blob)}catch(_){resolve('')}})}
-function documents(){const docs=[document];for(const w of [window.parent,window.top]){try{if(w&&w.document&&!docs.includes(w.document))docs.push(w.document)}catch(_){}}for(const doc of docs.slice()){try{for(const f of Array.from(doc.querySelectorAll('iframe')).slice(0,180)){try{if(f.contentDocument&&!docs.includes(f.contentDocument))docs.push(f.contentDocument)}catch(_){}}}catch(_){}}return docs;}
-function mounted(){let best=null,id=PREFIX+SERIAL;for(const doc of documents()){try{for(const n of doc.querySelectorAll('img[id="'+id+'"]')){const src=n.getAttribute('src')||'';if(!src.startsWith('data:image/png;base64,'))continue;const rev=Number(n.getAttribute('data-amc-revision')||0)||0;if(!best||rev>=best.revision)best={data_url:src,revision:rev};}}catch(_){}}return best;}
+function documents(){
+  const docs=[], seen=new WeakSet();
+  function add(doc){if(!doc||seen.has(doc))return;seen.add(doc);docs.push(doc);}
+  try{add(document)}catch(_){}
+  try{add(window.parent&&window.parent.document)}catch(_){}
+  try{add(window.top&&window.top.document)}catch(_){}
+  for(let i=0;i<docs.length&&i<240;i++){
+    const doc=docs[i];
+    try{for(const node of Array.from(doc.querySelectorAll('*')).slice(0,12000)){try{if(node.shadowRoot)add(node.shadowRoot)}catch(_){}}}catch(_){}
+    try{for(const frame of Array.from(doc.querySelectorAll('iframe')).slice(0,240)){try{add(frame.contentDocument)}catch(_){}}}catch(_){}
+  }
+  return docs;
+}
+function mounted(){
+  let best=null,id=PREFIX+SERIAL,order=0;
+  for(const doc of documents()){
+    try{for(const n of Array.from(doc.querySelectorAll('img[id="'+id+'"]'))){
+      const src=n.getAttribute('src')||n.src||'';
+      if(!src.startsWith('data:image/png;base64,'))continue;
+      const rev=Number(n.getAttribute('data-amc-revision')||0)||0;
+      if(!best||rev>best.revision||(rev===best.revision&&order>=best.order))best={data_url:src,revision:rev,order};
+      order++;
+    }}catch(_){}
+  }
+  return best;
+}
+function mountedCanvas(){
+  let best='';
+  for(const doc of documents()){
+    try{for(const c of Array.from(doc.querySelectorAll('canvas[data-amc-board-canvas="'+SERIAL+'"]'))){
+      try{const data=c.toDataURL('image/png');if(data&&data.startsWith('data:image/png;base64,'))best=data;}catch(_){}
+    }}catch(_){}
+  }
+  return best;
+}
 async function restore(){init();let local=await cacheRead(), mountedCopy=mounted(), chosen=null;
   if(local&&local.blob){const data=await blobToUrl(local.blob);if(data)chosen={data_url:data,revision:Number(local.revision)||0,dirty:!!local.dirty,from:'local'};}
   if(mountedCopy&&(!chosen||(!chosen.dirty&&mountedCopy.revision>chosen.revision)))chosen={...mountedCopy,dirty:false,from:'notebook'};
+  // Si una ejecución anterior aún está visible pero su carrier no está montado,
+  // recuperamos directamente sus píxeles antes de consultar el notebook.
+  if(!chosen){const visual=mountedCanvas();if(visual)chosen={data_url:visual,revision:0,dirty:false,from:'visible-canvas'};}
   if(chosen&&await paint(chosen.data_url)){knownRevision=chosen.revision;push(snapshot());ready=true;status(chosen.dirty?'✓ Copia local recuperada; sincronizando…':'✓ Board restaurado','saved');if(chosen.dirty)enqueue('sincronizar');return;}
   if(!kernel()){ready=true;status('Sin runtime: board nuevo local','error');return;}
   status('Buscando respaldo portátil…','saving');
@@ -599,17 +647,16 @@ void restore();
 # API pública
 # -----------------------------------------------------------------------------
 def board(serial: str = "board") -> None:
-    """Abre y recupera automáticamente un board con un único comando."""
+    """Abre y recupera automáticamente un board con un único comando.
+
+    Abrir nunca publica un carrier vacío. El canvas se bloquea mientras consulta
+    IndexedDB, carriers visibles y finalmente el .ipynb; por lo tanto un canvas
+    blanco no puede sobrescribir un snapshot anterior durante la recuperación.
+    """
     _require_colab()
     serial = _sanitize_serial(serial)
     save_callback, restore_callback = _ensure_callbacks(serial)
-
-    # Establece primero un carrier vacío asociado a ESTA ejecución de celda.
-    # No contiene imagen y por eso no borra ni eclipsa carriers antiguos; sólo
-    # deja preparado el DisplayHandle que los guardados posteriores actualizarán.
-    _ensure_carrier_handle(serial)
     display(HTML(_board_html(serial, uuid.uuid4().hex, save_callback, restore_callback)))
-
 
 def listar_boards(incluir_base64: bool = False, recargar: bool = False):
     if recargar:
