@@ -43,7 +43,7 @@ import requests
 from IPython.display import HTML
 
 
-_VIEWER_REPO_DEFAULT = "artemioadaysolvers/AutoMind-USD-URDF-Loader"
+_VIEWER_REPO_DEFAULT = "artemioadaysolvers/AutoMind-URDF-USD-MJCF-Loader"
 _VIEWER_BRANCH_DEFAULT = "main"
 _VIEWER_ENTRY_DEFAULT = "MJCF_Viewer/mjcf_viewer_main.js"
 
