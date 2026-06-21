@@ -574,7 +574,7 @@ def URDF_Visualization(
     folder_path: str = "URDF_Export",
     select_mode: str = "link",
     background: int | None = 0xFFFFFF,
-    repo: str = "artemioadaysolvers/AutoMind-USD-URDF-Loader",
+    repo: str = "artemioadaysolvers/AutoMind-URDF-USD-MJCF-Loader",
     branch: str = "main",
     compFile: str = "URDF_Viewer/urdfplus_viewer_main.js",
     api_base: str = API_DEFAULT_BASE,
