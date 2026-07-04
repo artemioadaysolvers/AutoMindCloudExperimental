@@ -46,10 +46,10 @@
 </p>
 
 ---
-
+https://drive.google.com/file/d/1sdTBrEa80DQ0y-z2wvwMnCKF-Aw9c21d/view?usp=sharing
 
 **Electromagnetism: Ampere's Law**  
-➡️ [Open in Colab](https://drive.google.com/file/d/1cr6nz1vhXYqTzAxudIH-pdStGR_MuRDV/view?usp=sharing)
+➡️ [Open in Colab](https://drive.google.com/file/d/1jeiwxpwryoEXxQegVTLQ3egGXZknIBv6/view?usp=sharing)
 
 <p align="center">
   <img width="650" alt="Electromagnetism"
@@ -61,7 +61,7 @@
 
 
 **Fluid Mechanics: Fluid Dynamics in a Circular Tube**  
-➡️ [Open in Colab](https://drive.google.com/file/d/1G01krMKy2A9fp0UE6qk6bdBf0-44aJ8Y/view?usp=sharing)
+➡️ [Open in Colab](https://drive.google.com/file/d/1sdTBrEa80DQ0y-z2wvwMnCKF-Aw9c21d/view?usp=sharing)
 
 <p align="center">
   <img width="650" alt="Electromagnetism"
