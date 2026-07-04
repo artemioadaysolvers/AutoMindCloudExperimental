@@ -88,27 +88,20 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
 
 
 
-
-
-
 # AutoMindCloud/__init__.py
-# Envía AutoMind_Info automáticamente a Firestore al importar AutoMindCloud.
-# Muestra logs de diagnóstico solo en F12 → Console del navegador.
+# Envía AutoMind_Info automáticamente al importar el paquete.
+# Python no espera Firestore: el envío ocurre en segundo plano con IPython HTML.
 
 import json
-import time
+import uuid
 
 
 __all__ = [
     "reenviar_automind_firestore",
-    "get_ultimo_envio_automind",
 ]
 
 
-# ============================================================
-# CONFIGURACIÓN
-# ============================================================
-_JSDELIVR_AUTOMIND_URL = (
+_JSDELIVR_URL = (
     "https://cdn.jsdelivr.net/gh/"
     "artemioadaysolvers/"
     "AutoMindCloud-API/"
@@ -116,122 +109,54 @@ _JSDELIVR_AUTOMIND_URL = (
     "automind-firestore.js"
 )
 
-# True: muestra logs en F12 → Console.
-# False: no muestra logs.
-DEBUG_AUTOMIND = True
 
-
-ULTIMO_ENVIO_AUTOMIND = {
-    "ok": False,
-    "code": "not-executed",
-    "message": "El envío todavía no se ha ejecutado."
-}
-
-
-# ============================================================
-# LEER metadata.AutoMind_Info DEL NOTEBOOK ACTUAL
-# ============================================================
-def _obtener_automind_info(intentos=3, espera_segundos=1.0):
+def _obtener_automind_info():
     try:
         from google.colab import _message
-    except Exception as error:
-        return (
-            {
-                "Estado": "Google Colab no disponible"
-            },
-            {
-                "ok": False,
-                "stage": "import-google-colab",
-                "message": str(error)
-            }
+
+        respuesta = _message.blocking_request(
+            "get_ipynb",
+            timeout_sec=60
         )
 
-    ultimo_error = None
+        notebook = respuesta.get("ipynb", {})
 
-    for intento in range(max(1, int(intentos))):
-        try:
-            respuesta = _message.blocking_request(
-                "get_ipynb",
-                timeout_sec=60
-            )
+        if isinstance(notebook, str):
+            notebook = json.loads(notebook)
 
-            notebook = respuesta.get("ipynb", {})
+        if not isinstance(notebook, dict):
+            return {
+                "Estado": "Notebook no válido"
+            }
 
-            if isinstance(notebook, str):
-                notebook = json.loads(notebook)
+        auto_mind_info = (
+            notebook
+            .get("metadata", {})
+            .get("AutoMind_Info")
+        )
 
-            if not isinstance(notebook, dict):
-                raise TypeError(
-                    "Colab no devolvió un notebook JSON válido."
-                )
+        if not isinstance(auto_mind_info, dict):
+            return {
+                "Estado": "AutoMind_Info no encontrada"
+            }
 
-            auto_mind_info = (
-                notebook
-                .get("metadata", {})
-                .get("AutoMind_Info")
-            )
+        return auto_mind_info
 
-            if isinstance(auto_mind_info, dict):
-                return (
-                    auto_mind_info,
-                    {
-                        "ok": True,
-                        "stage": "metadata-read",
-                        "attempt": intento + 1,
-                        "message": "AutoMind_Info encontrada."
-                    }
-                )
+    except Exception as error:
+        return {
+            "Estado": "No fue posible leer AutoMind_Info",
+            "Detalle": str(error)
+        }
 
-            return (
-                {
-                    "Estado": "AutoMind_Info no encontrada"
-                },
-                {
-                    "ok": False,
-                    "stage": "metadata-read",
-                    "attempt": intento + 1,
-                    "message": (
-                        "metadata.AutoMind_Info no existe "
-                        "o no es un diccionario."
-                    )
-                }
-            )
 
-        except Exception as error:
-            ultimo_error = error
-
-            if intento < intentos - 1:
-                time.sleep(float(espera_segundos))
+def _json_seguro_para_javascript(data):
+    texto = json.dumps(
+        data,
+        ensure_ascii=False
+    )
 
     return (
-        {
-            "Estado": "No fue posible leer AutoMind_Info",
-            "Detalle": str(ultimo_error)
-        },
-        {
-            "ok": False,
-            "stage": "get-ipynb",
-            "message": str(ultimo_error)
-        }
-    )
-
-
-# ============================================================
-# SERIALIZACIÓN SEGURA PARA JavaScript
-# ============================================================
-def _json_string_literal(data):
-    """
-    Devuelve un string JavaScript seguro.
-    En JS se reconstruye con JSON.parse(...).
-    """
-    texto_json = json.dumps(
-        data,
-        ensure_ascii=False,
-        separators=(",", ":")
-    )
-
-    texto_json = (
-        texto_json
+        texto
         .replace("<", "\\u003c")
         .replace(">", "\\u003e")
         .replace("&", "\\u0026")
@@ -239,285 +164,96 @@ def _json_string_literal(data):
         .replace("\u2029", "\\u2029")
     )
 
-    return json.dumps(
-        texto_json,
-        ensure_ascii=False
-    )
 
-
-# ============================================================
-# EJECUTAR MÓDULO JS EN EL FRONTEND DE COLAB
-# ============================================================
-def _enviar_automind_firestore():
-    global ULTIMO_ENVIO_AUTOMIND
-
-    auto_mind_info, estado_python = _obtener_automind_info()
-
+def reenviar_automind_firestore():
+    """
+    Inserta JavaScript en el frontend de Colab.
+    Retorna de inmediato; Firestore continúa en segundo plano.
+    """
     try:
-        from google.colab import output
-    except Exception as error:
-        ULTIMO_ENVIO_AUTOMIND = {
-            "ok": False,
-            "code": "colab-required",
-            "message": str(error)
-        }
-        return ULTIMO_ENVIO_AUTOMIND
+        from IPython.display import HTML, display
 
-    # Se agrega una query para evitar que el navegador reutilice
-    # una versión antigua durante pruebas, sin usar @main.
-    module_url = (
-        f"{_JSDELIVR_AUTOMIND_URL}"
-        f"?debug={time.time_ns()}"
-    )
+        auto_mind_info = _obtener_automind_info()
 
-    automind_info_literal = _json_string_literal(auto_mind_info)
+        automind_json = _json_seguro_para_javascript(
+            auto_mind_info
+        )
 
-    estado_python_json = json.dumps(
-        estado_python,
-        ensure_ascii=False
-    )
+        instance_id = f"automind_sender_{uuid.uuid4().hex}"
+        js_url_json = json.dumps(
+            _JSDELIVR_URL,
+            ensure_ascii=False
+        )
 
-    module_url_json = json.dumps(
-        module_url,
-        ensure_ascii=False
-    )
+        html = r'''
+<div id="__INSTANCE_ID__" style="display:none;"></div>
 
-    debug_json = json.dumps(
-        bool(DEBUG_AUTOMIND)
-    )
-
-    javascript = r'''
+<script>
 (async () => {
-  const DEBUG = __DEBUG_VALUE__;
-
-  function log(...args) {
-    if (DEBUG) {
-      console.log("[AutoMindCloud]", ...args);
-    }
-  }
-
-  function warn(...args) {
-    if (DEBUG) {
-      console.warn("[AutoMindCloud]", ...args);
-    }
-  }
-
-  function errorLog(...args) {
-    if (DEBUG) {
-      console.error("[AutoMindCloud]", ...args);
-    }
-  }
-
-  const startTime = performance.now();
-
   try {
-    if (DEBUG) {
-      console.groupCollapsed(
-        "[AutoMindCloud] Diagnóstico Firestore"
-      );
-    }
-
-    const autoMindInfo = JSON.parse(
-      __AUTOMIND_INFO_LITERAL__
-    );
-
-    const pythonStatus = __PYTHON_STATUS_JSON__;
+    const autoMindInfo = __AUTOMIND_INFO_JSON__;
     const moduleUrl = __MODULE_URL_JSON__;
 
-    log("1. Estado Python:", pythonStatus);
-    log("2. AutoMind_Info:", autoMindInfo);
-    log("3. URL jsDelivr:", moduleUrl);
-
-    if (!pythonStatus.ok) {
-      warn(
-        "AutoMind_Info no fue leída normalmente; " +
-        "se enviará el objeto de respaldo."
-      );
-    }
-
-    log("4. Importando módulo JS...");
+    console.log(
+      "[AutoMindCloud] Importando módulo:",
+      moduleUrl
+    );
 
     const modulo = await import(moduleUrl);
 
-    log("5. Módulo importado.");
-    log("6. Exportaciones:", Object.keys(modulo));
+    console.log(
+      "[AutoMindCloud] Exportaciones disponibles:",
+      Object.keys(modulo)
+    );
 
     if (
       !modulo ||
       typeof modulo.enviarAutoMindFirestore !== "function"
     ) {
-      const result = {
-        ok: false,
-        code: "invalid-module",
-        message: (
-          "El módulo no exporta enviarAutoMindFirestore."
-        )
-      };
-
-      errorLog(result);
-      return result;
+      console.error(
+        "[AutoMindCloud] No existe enviarAutoMindFirestore."
+      );
+      return;
     }
 
-    log("7. Ejecutando enviarAutoMindFirestore(...)");
-
-    const rawResult = await modulo.enviarAutoMindFirestore(
+    const resultado = await modulo.enviarAutoMindFirestore(
       autoMindInfo
     );
 
-    log("8. Resultado crudo:", rawResult);
-
-    let result;
-
-    if (rawResult === true) {
-      result = {
-        ok: true,
-        message: "El módulo devolvió true."
-      };
-
-    } else if (rawResult === false) {
-      result = {
-        ok: false,
-        code: "send-failed",
-        message: "El módulo devolvió false."
-      };
-
-    } else if (
-      rawResult &&
-      typeof rawResult === "object"
-    ) {
-      result = rawResult;
-
-    } else {
-      result = {
-        ok: false,
-        code: "invalid-response",
-        message: "El módulo devolvió una respuesta no válida."
-      };
-    }
-
-    const elapsedMs = Math.round(
-      performance.now() - startTime
+    console.log(
+      "[AutoMindCloud] Resultado Firestore:",
+      resultado
     );
 
-    if (result.ok) {
-      log("9. Envío correcto:", {
-        ...result,
-        elapsedMs
-      });
-    } else {
-      errorLog("9. Error reportado:", {
-        ...result,
-        elapsedMs
-      });
-    }
-
-    return {
-      ...result,
-      elapsedMs
-    };
-
   } catch (error) {
-    const result = {
-      ok: false,
-      code: error?.code || "javascript-error",
-      message: error?.message || String(error),
-      stack: error?.stack || null
-    };
-
-    errorLog("Error no controlado:", result);
-
-    return result;
-
-  } finally {
-    if (DEBUG) {
-      console.groupEnd();
-    }
+    console.error(
+      "[AutoMindCloud] Error durante envío:",
+      error
+    );
   }
-})()
+})();
+</script>
 '''
 
-    javascript = (
-        javascript
-        .replace("__DEBUG_VALUE__", debug_json)
-        .replace(
-            "__AUTOMIND_INFO_LITERAL__",
-            automind_info_literal
+        html = (
+            html
+            .replace("__INSTANCE_ID__", instance_id)
+            .replace("__AUTOMIND_INFO_JSON__", automind_json)
+            .replace("__MODULE_URL_JSON__", js_url_json)
         )
-        .replace(
-            "__PYTHON_STATUS_JSON__",
-            estado_python_json
-        )
-        .replace(
-            "__MODULE_URL_JSON__",
-            module_url_json
-        )
-    )
 
-    try:
-        resultado = output.eval_js(javascript)
+        display(HTML(html))
 
-        if isinstance(resultado, dict):
-            ULTIMO_ENVIO_AUTOMIND = resultado
-        else:
-            ULTIMO_ENVIO_AUTOMIND = {
-                "ok": False,
-                "code": "invalid-result",
-                "message": (
-                    "output.eval_js devolvió un resultado no válido."
-                )
-            }
+        return True
 
-    except Exception as error:
-        ULTIMO_ENVIO_AUTOMIND = {
-            "ok": False,
-            "code": "eval-js-error",
-            "message": str(error)
-        }
-
-    return ULTIMO_ENVIO_AUTOMIND
+    except Exception:
+        return False
 
 
 # ============================================================
-# FUNCIONES PÚBLICAS
+# ENVÍO AUTOMÁTICO AL HACER import AutoMindCloud
 # ============================================================
-def reenviar_automind_firestore():
-    """
-    Fuerza un nuevo envío y retorna el resultado.
-    Los logs aparecen en F12 → Console.
-    """
-    return _enviar_automind_firestore()
-
-
-def get_ultimo_envio_automind():
-    """
-    Devuelve el último resultado sin ejecutar otro envío.
-    """
-    return dict(ULTIMO_ENVIO_AUTOMIND)
-
-
-# ============================================================
-# ACTIVACIÓN AUTOMÁTICA AL IMPORTAR
-# ============================================================
-ULTIMO_ENVIO_AUTOMIND = _enviar_automind_firestore()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+reenviar_automind_firestore()
 
 
 
