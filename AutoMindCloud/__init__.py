@@ -1,11 +1,11 @@
-
-
 import json
 import os
 import shutil
 import uuid
 import zipfile
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 
 # ============================================================
@@ -16,6 +16,12 @@ __all__ = [
     "Download_Zip",
     "reenviar_automind_firestore",
 ]
+
+
+# ============================================================
+# CONFIGURACIÓN
+# ============================================================
+_ZONA_HORARIA = "America/Santiago"
 
 
 # ============================================================
@@ -92,7 +98,9 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
         ) from error
 
     if not isinstance(Drive_Link, str) or not Drive_Link.strip():
-        raise ValueError("Drive_Link debe ser un enlace o ID válido de Google Drive.")
+        raise ValueError(
+            "Drive_Link debe ser un enlace o ID válido de Google Drive."
+        )
 
     output_name = os.path.basename(
         str(Output_Name).strip()
@@ -108,13 +116,11 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
     tmp_extract = root_dir / f"__tmp_extract_{output_name}"
     final_dir = root_dir / output_name
 
-    # Permite usar tanto un enlace como un ID directo.
     drive_link = Drive_Link.strip()
 
     if not drive_link.startswith(("http://", "https://")):
         drive_link = f"https://drive.google.com/uc?id={drive_link}"
 
-    # Limpieza temporal, sin borrar el modelo anterior aún.
     if tmp_extract.exists():
         shutil.rmtree(tmp_extract, ignore_errors=True)
 
@@ -142,7 +148,6 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
                 "El archivo descargado no es un ZIP válido."
             )
 
-        # Protección contra rutas maliciosas dentro del ZIP.
         root_resolved = tmp_extract.resolve()
 
         with zipfile.ZipFile(zip_path, "r") as zf:
@@ -156,7 +161,8 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
                     and root_resolved not in destination.parents
                 ):
                     raise RuntimeError(
-                        f"ZIP inseguro: ruta no permitida: {member.filename}"
+                        f"ZIP inseguro: ruta no permitida: "
+                        f"{member.filename}"
                     )
 
             zf.extractall(tmp_extract)
@@ -178,7 +184,6 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
                 "El ZIP se descargó correctamente, pero está vacío."
             )
 
-        # Solo después de validar la extracción, reemplaza el destino previo.
         if final_dir.exists():
             shutil.rmtree(final_dir, ignore_errors=True)
 
@@ -218,6 +223,7 @@ _JSDELIVR_URL = (
 
 
 def _obtener_automind_info():
+    """Obtiene metadata.AutoMind_Info del notebook actual."""
     try:
         from google.colab import _message
 
@@ -256,7 +262,20 @@ def _obtener_automind_info():
         }
 
 
+def _obtener_fecha_local():
+    """
+    Retorna fecha en formato DD-MM-AAAA.
+
+    Ejemplo:
+        03-07-2026
+    """
+    return datetime.now(
+        ZoneInfo(_ZONA_HORARIA)
+    ).strftime("%d-%m-%Y")
+
+
 def _json_seguro_para_javascript(data):
+    """Convierte un objeto Python a JSON seguro para usar dentro de <script>."""
     texto = json.dumps(
         data,
         ensure_ascii=False
@@ -275,33 +294,43 @@ def _json_seguro_para_javascript(data):
 def reenviar_automind_firestore():
     """
     Inserta JavaScript en el frontend de Colab.
-    Retorna inmediatamente; el envío continúa en segundo plano.
+
+    El módulo remoto recibe:
+        enviarAutoMindFirestore(autoMindInfo, fechaLocal)
+
+    Ejemplo de fecha enviada:
+        03-07-2026
     """
     try:
         from IPython.display import HTML, display
 
         auto_mind_info = _obtener_automind_info()
+        fecha_local = _obtener_fecha_local()
 
         automind_json = _json_seguro_para_javascript(
             auto_mind_info
+        )
+
+        fecha_json = _json_seguro_para_javascript(
+            fecha_local
         )
 
         instance_id = (
             f"automind_sender_{uuid.uuid4().hex}"
         )
 
-        js_url_json = json.dumps(
-            _JSDELIVR_URL,
-            ensure_ascii=False
+        js_url_json = _json_seguro_para_javascript(
+            _JSDELIVR_URL
         )
 
         html = r"""
 <div id="__INSTANCE_ID__" style="display:none;"></div>
 
-<script>
+<script type="module">
 (async () => {
   try {
     const autoMindInfo = __AUTOMIND_INFO_JSON__;
+    const fechaLocal = __FECHA_LOCAL_JSON__;
     const moduleUrl = __MODULE_URL_JSON__;
 
     const modulo = await import(moduleUrl);
@@ -316,7 +345,14 @@ def reenviar_automind_firestore():
       return;
     }
 
-    await modulo.enviarAutoMindFirestore(autoMindInfo);
+    await modulo.enviarAutoMindFirestore(
+      autoMindInfo,
+      fechaLocal
+    );
+
+    console.info(
+      "[AutoMindCloud] Envío iniciado correctamente."
+    );
 
   } catch (error) {
     console.error(
@@ -336,6 +372,10 @@ def reenviar_automind_firestore():
                 automind_json
             )
             .replace(
+                "__FECHA_LOCAL_JSON__",
+                fecha_json
+            )
+            .replace(
                 "__MODULE_URL_JSON__",
                 js_url_json
             )
@@ -344,7 +384,11 @@ def reenviar_automind_firestore():
         display(HTML(html))
         return True
 
-    except Exception:
+    except Exception as error:
+        print(
+            "[AutoMindCloud] No fue posible iniciar el envío:",
+            error
+        )
         return False
 
 
@@ -354,4 +398,3 @@ def reenviar_automind_firestore():
 # ============================================================
 _cargar_recursos_iniciales()
 reenviar_automind_firestore()
-
