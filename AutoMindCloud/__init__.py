@@ -11,7 +11,6 @@ import zipfile
 
 __all__ = [
     "Download_Zip",
-    "diagnostico_automind_firestore",
     "reenviar_automind_firestore",
 ]
 
@@ -180,7 +179,6 @@ def _crear_script_automind(auto_mind_info, status_id):
     lineas.append("      '/commits?' +")
     lineas.append("      params.toString();")
     lineas.append("")
-    lineas.append("    window.__AutoMindCloud_commitUrl = githubCommitUrl;")
     lineas.append("")
     lineas.append("    const commitResponse = await fetch(githubCommitUrl, {")
     lineas.append("      cache: 'no-store',")
@@ -209,8 +207,6 @@ def _crear_script_automind(auto_mind_info, status_id):
     lineas.append("      latestSha + '/' +")
     lineas.append("      modulePath;")
     lineas.append("")
-    lineas.append("    window.__AutoMindCloud_latestSha = latestSha;")
-    lineas.append("    window.__AutoMindCloud_lastModuleUrl = moduleUrl;")
     lineas.append("")
     lineas.append("    const modulo = await import(moduleUrl);")
     lineas.append("")
@@ -219,23 +215,12 @@ def _crear_script_automind(auto_mind_info, status_id):
     lineas.append("    }")
     lineas.append("")
     lineas.append("    const resultado = await modulo.enviarAutoMindFirestore(autoMindInfo);")
-    lineas.append("    window.__AutoMindCloud_lastResult = resultado;")
     lineas.append("")
     lineas.append("    if (!resultado || resultado.ok !== true) {")
     lineas.append("      throw new Error('Firestore respondio error: ' + JSON.stringify(resultado));")
     lineas.append("    }")
     lineas.append("")
-    lineas.append("  } catch (error) {")
-    lineas.append("    const errorInfo = {")
-    lineas.append("      name: error && error.name,")
-    lineas.append("      code: error && error.code,")
-    lineas.append("      message: error && error.message,")
-    lineas.append("      commitUrl: window.__AutoMindCloud_commitUrl || null,")
-    lineas.append("      latestSha: window.__AutoMindCloud_latestSha || null,")
-    lineas.append("      moduleUrl: window.__AutoMindCloud_lastModuleUrl || null")
-    lineas.append("    };")
-    lineas.append("    window.__AutoMindCloud_lastError = errorInfo;")
-    lineas.append("    console.error('[AutoMindCloud] Error durante envio:', error);")
+    lineas.append("  } catch (_) {")
     lineas.append("  }")
     lineas.append("})();")
 
@@ -261,22 +246,6 @@ def reenviar_automind_firestore():
 
     except Exception:
         return False
-
-
-def diagnostico_automind_firestore():
-    info = {
-        "version": _VERSION,
-        "archivo": globals().get("__file__", "desconocido"),
-        "github_owner_js": _JS_GITHUB_OWNER,
-        "github_repo_js": _JS_GITHUB_REPO,
-        "module_path_js": _JS_MODULE_PATH,
-        "consulta_commit_dentro_del_codigo": True,
-        "usa_jsdelivr_con_sha": True,
-        "usa_main_en_jsdelivr": False,
-    }
-
-    print(json.dumps(info, indent=2, ensure_ascii=False))
-    return info
 
 
 _descargar_click_sound()
