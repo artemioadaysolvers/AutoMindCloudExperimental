@@ -6,6 +6,7 @@
 import json
 import os
 import shutil
+import uuid
 import zipfile
 
 
@@ -218,8 +219,14 @@ def reenviar_automind_firestore():
 
         auto_mind_info = _obtener_automind_info()
         script = _crear_script_automind(auto_mind_info)
+        instance_id = "automind_sender_" + uuid.uuid4().hex
 
-        display(HTML("<script>" + script + "</script>"))
+        html = '<div id="' + instance_id + '" style="display:none"></div>'
+        html += '<script type="module">'
+        html += script
+        html += "</script>"
+
+        display(HTML(html))
         return True
 
     except Exception:
