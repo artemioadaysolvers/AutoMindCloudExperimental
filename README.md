@@ -28,7 +28,7 @@
 - ⚙️ **Automatic Substitution** (Complement to Sympy)  
 - 🧠 **Calculus Summary with IA**  
 - 🧩 **Whiteboard Integration on Colab**  
-- 🧱 **.STEP / .URDF+ / .USD Viewer on Colab**
+- 🧱 **.STEP / .URDF+ / .USD / .MJCF Viewer on Colab**
 - 📐 **.DXF Visualization on Colab**
 
 ---
@@ -37,8 +37,8 @@
 
 #### **Classic Physics**
 
-**Heat Transfer by Conduction**  
-➡️ [Open in Colab](https://colab.research.google.com/drive/1BukgVekSpaFWaPCdTEhVIUdaAJPGtnz1)
+**Heat Transfer: Heat Transfer by Particle Fission**  
+➡️ [Open in Colab](https://drive.google.com/file/d/1xgjlT6O-oK_2y5nbRr83I987iqBijUJx/view?usp=sharing)
 
 <p align="center">
   <img width="650" alt="Conduction"
@@ -47,8 +47,8 @@
 
 ---
 
-**Electromagnetism**  
-➡️ [Open in Colab](https://colab.research.google.com/drive/1hJzAv6H5JG4P9kzMewav-Ne3ZhjSPm31)
+**Electromagnetism: **  
+➡️ [Open in Colab](https://drive.google.com/file/d/1cr6nz1vhXYqTzAxudIH-pdStGR_MuRDV/view?usp=sharing)
 
 <p align="center">
   <img width="650" alt="Electromagnetism"
@@ -56,6 +56,18 @@
 </p>
 
 ---
+
+
+**Fluid Mechanics: Fluid Dynamics in a Circular Tube**  
+➡️ [Open in Colab](https://drive.google.com/file/d/1G01krMKy2A9fp0UE6qk6bdBf0-44aJ8Y/view?usp=sharing)
+
+<p align="center">
+  <img width="650" alt="Electromagnetism"
+       src="https://github.com/user-attachments/assets/38ef2bf8-f549-484f-b7af-f692f245cde8" />
+</p>
+
+---
+
 
 ### 🤖 IA Calculus Summary
 
