@@ -1,7 +1,6 @@
 import json
 import os
 import shutil
-import threading
 import uuid
 import zipfile
 from pathlib import Path
@@ -22,8 +21,8 @@ __all__ = [
 # ============================================================
 MOSTRAR_BANNER_AL_IMPORTAR = True
 
-# Debe enviarse automáticamente al importar el paquete,
-# pero sin bloquear la ejecución de la celda.
+# Se envía automáticamente al importar el paquete.
+# Colab requiere que la inyección HTML ocurra en el hilo principal.
 ENVIAR_AUTOMATICAMENTE_AL_IMPORTAR = True
 
 # Límite de espera solo para leer metadata.AutoMind_Info.
@@ -245,8 +244,8 @@ def _obtener_automind_info(timeout_segundos):
     """
     Lee metadata.AutoMind_Info del notebook actual.
 
-    Esta función puede tardar algunos segundos, por lo que
-    no se ejecuta directamente en el hilo principal al importar.
+    Esta función puede tardar algunos segundos. Se ejecuta antes
+    de inyectar el JavaScript en la salida de la celda actual.
     """
     try:
         from google.colab import _message
@@ -311,13 +310,16 @@ def _json_seguro_para_javascript(data):
     )
 
 
-def _inyectar_envio_frontend(auto_mind_info):
+def _inyectar_envio_frontend(
+    auto_mind_info,
+    mostrar_estado=True
+):
     """
-    Inserta JavaScript en el frontend.
+    Inserta JavaScript en la salida de la celda actual.
 
-    Solo entrega AutoMind_Info al módulo remoto.
-    Fecha, hora, zona horaria, IP y User_Info se consultan
-    exclusivamente desde automind-firestore.js en el navegador.
+    IMPORTANTE:
+    display(HTML(...)) debe ejecutarse desde el hilo principal de
+    la celda de Colab. Así el navegador recibe y ejecuta el módulo.
     """
     try:
         from IPython.display import HTML, display
@@ -338,31 +340,101 @@ def _inyectar_envio_frontend(auto_mind_info):
         instance_id = (
             f"automind_sender_{uuid.uuid4().hex}"
         )
+        estado_id = (
+            f"automind_estado_{uuid.uuid4().hex}"
+        )
+        mostrar_estado_json = (
+            "true" if mostrar_estado else "false"
+        )
 
         html = r"""
 <div id="__INSTANCE_ID__" style="display:none;"></div>
 
+<div id="__STATUS_ID__" style="
+  display: __STATUS_DISPLAY__;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid #555;
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+">
+⏳ AutoMindCloud: enviando información a Firestore…
+</div>
+
 <script type="module">
 (async () => {
+  const estado = document.getElementById("__STATUS_ID__");
+  const mostrarEstado = __SHOW_STATUS__;
+
+  function mostrar(texto, esError) {
+    if (!estado) return;
+
+    if (!mostrarEstado && !esError) {
+      estado.style.display = "none";
+      return;
+    }
+
+    estado.style.display = "block";
+    estado.style.borderColor = esError ? "#b42318" : "#188038";
+    estado.textContent = texto;
+  }
+
   try {
     const autoMindInfo = __AUTOMIND_INFO_JSON__;
     const moduleUrl = __MODULE_URL_JSON__;
 
-    const modulo = await import(moduleUrl);
+    // Evita usar una copia antigua retenida por caché de jsDelivr.
+    const separador = moduleUrl.includes("?") ? "&" : "?";
+    const modulo = await import(
+      moduleUrl + separador + "v=" + Date.now()
+    );
 
     if (
       !modulo ||
       typeof modulo.enviarAutoMindFirestore !== "function"
     ) {
-      return;
+      throw new Error(
+        "El módulo no exporta enviarAutoMindFirestore."
+      );
     }
 
-    await modulo.enviarAutoMindFirestore(
+    const resultado = await modulo.enviarAutoMindFirestore(
       autoMindInfo
     );
 
-  } catch (_) {
-    // Sin mensajes visuales ni consola.
+    if (!resultado || resultado.ok !== true) {
+      const error = new Error(
+        resultado?.message ||
+        "Firestore no confirmó el guardado."
+      );
+      error.code = resultado?.code || "unknown-error";
+      throw error;
+    }
+
+    mostrar(
+      "✅ AutoMindCloud: guardado en " +
+      resultado.collectionName + "/" +
+      resultado.ipDocument + "/JSON/" +
+      resultado.documentId,
+      false
+    );
+
+  } catch (error) {
+    console.error(
+      "[AutoMindCloud] Error al guardar en Firestore:",
+      error
+    );
+
+    mostrar(
+      "❌ AutoMindCloud no pudo guardar.\n" +
+      "Código: " + (error?.code || "unknown-error") + "\n" +
+      "Detalle: " + (
+        error?.message || String(error)
+      ),
+      true
+    );
   }
 })();
 </script>
@@ -371,6 +443,15 @@ def _inyectar_envio_frontend(auto_mind_info):
         html = (
             html
             .replace("__INSTANCE_ID__", instance_id)
+            .replace("__STATUS_ID__", estado_id)
+            .replace(
+                "__STATUS_DISPLAY__",
+                "block" if mostrar_estado else "none"
+            )
+            .replace(
+                "__SHOW_STATUS__",
+                mostrar_estado_json
+            )
             .replace(
                 "__AUTOMIND_INFO_JSON__",
                 automind_json
@@ -384,10 +465,12 @@ def _inyectar_envio_frontend(auto_mind_info):
         display(HTML(html))
         return True
 
-    except Exception:
+    except Exception as error:
+        print(
+            "[AutoMindCloud] No se pudo inyectar "
+            f"el envío a Firestore: {error}"
+        )
         return False
-
-
 def reenviar_automind_firestore(
     autoMindInfo=None,
     timeout_segundos=TIEMPO_MAXIMO_LEER_NOTEBOOK_SEGUNDOS
@@ -408,41 +491,37 @@ def reenviar_automind_firestore(
     )
 
 
-def _envio_automatico_en_segundo_plano():
+# ============================================================
+# ENVÍO AUTOMÁTICO AL HACER:
+# import AutoMindCloud
+# ============================================================
+def _envio_automatico_al_importar():
     """
-    Inicia el envío automático sin bloquear import AutoMindCloud.
+    Ejecuta el envío en el hilo principal.
+
+    No se usa threading: Colab debe recibir display(HTML(...))
+    durante la ejecución de la celda para que el JavaScript exista
+    en el frontend y pueda guardar en Firestore.
     """
     global _AUTO_ENVIO_INICIADO
 
     if _AUTO_ENVIO_INICIADO:
-        return
+        return False
 
     _AUTO_ENVIO_INICIADO = True
 
-    def tarea():
-        auto_mind_info = _obtener_automind_info(
-            TIEMPO_MAXIMO_LEER_NOTEBOOK_SEGUNDOS
-        )
-
-        _inyectar_envio_frontend(
-            auto_mind_info
-        )
-
-    hilo = threading.Thread(
-        target=tarea,
-        daemon=True,
-        name="AutoMindFirestoreSender"
+    auto_mind_info = _obtener_automind_info(
+        TIEMPO_MAXIMO_LEER_NOTEBOOK_SEGUNDOS
     )
 
-    hilo.start()
+    return _inyectar_envio_frontend(
+        auto_mind_info,
+        mostrar_estado=True
+    )
 
 
-# ============================================================
-# EJECUCIÓN AUTOMÁTICA AL HACER:
-# import AutoMindCloud
-# ============================================================
 if MOSTRAR_BANNER_AL_IMPORTAR:
     _mostrar_banner()
 
 if ENVIAR_AUTOMATICAMENTE_AL_IMPORTAR:
-    _envio_automatico_en_segundo_plano()
+    _envio_automatico_al_importar()
