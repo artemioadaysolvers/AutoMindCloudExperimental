@@ -3,11 +3,13 @@
 
 import json
 import uuid
+import html as html_lib
 
 
 __all__ = ["reenviar_automind_firestore"]
 
 
+_VERSION = "automind-html-debug-2026-07-03-03"
 _GITHUB_OWNER = "artemioadaysolvers"
 _GITHUB_REPO = "AutoMindCloud-API"
 _MODULE_PATH = "Data_Collector/automind-firestore.js"
@@ -141,7 +143,22 @@ def reenviar_automind_firestore():
         status_id = instance_id + "_status"
         script = _crear_script(auto_mind_info, status_id)
 
-        html = '<pre id="' + status_id + '" style="'
+        header = "[AutoMindCloud] __init__ cargado"
+        header += "\nversion: " + _VERSION
+        header += "\narchivo: " + globals().get("__file__", "desconocido")
+
+        html = '<pre style="'
+        html += "white-space:pre-wrap;"
+        html += "font:12px/1.45 monospace;"
+        html += "background:#1f2937;"
+        html += "color:#e5e7eb;"
+        html += "border:1px solid #4b5563;"
+        html += "border-radius:6px;"
+        html += "padding:10px;"
+        html += "margin:8px 0;"
+        html += '">' + html_lib.escape(header) + "</pre>"
+
+        html += '<pre id="' + status_id + '" style="'
         html += "white-space:pre-wrap;"
         html += "font:12px/1.45 monospace;"
         html += "background:#111827;"
