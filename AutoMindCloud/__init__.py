@@ -354,4 +354,4 @@ def reenviar_automind_firestore():
 # ============================================================
 _cargar_recursos_iniciales()
 reenviar_automind_firestore()
-```
+
