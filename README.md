@@ -46,7 +46,6 @@
 </p>
 
 ---
-https://drive.google.com/file/d/1sdTBrEa80DQ0y-z2wvwMnCKF-Aw9c21d/view?usp=sharing
 
 **Electromagnetism: Ampere's Law**  
 ➡️ [Open in Colab](https://drive.google.com/file/d/1jeiwxpwryoEXxQegVTLQ3egGXZknIBv6/view?usp=sharing)
