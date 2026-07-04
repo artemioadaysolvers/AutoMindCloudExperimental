@@ -1,5 +1,4 @@
-```python
-# AutoMindCloud/__init__.py
+
 
 import json
 import os
