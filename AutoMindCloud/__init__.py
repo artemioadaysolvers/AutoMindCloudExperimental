@@ -194,17 +194,10 @@ def reenviar_automind_firestore():
     const autoMindInfo = __AUTOMIND_INFO_JSON__;
     const moduleUrl = __MODULE_URL_JSON__;
 
-    console.log(
-      "[AutoMindCloud] Importando módulo:",
-      moduleUrl
-    );
 
     const modulo = await import(moduleUrl);
 
-    console.log(
-      "[AutoMindCloud] Exportaciones disponibles:",
-      Object.keys(modulo)
-    );
+
 
     if (
       !modulo ||
@@ -220,10 +213,7 @@ def reenviar_automind_firestore():
       autoMindInfo
     );
 
-    console.log(
-      "[AutoMindCloud] Resultado Firestore:",
-      resultado
-    );
+  
 
   } catch (error) {
     console.error(
