@@ -1,22 +1,117 @@
 # AutoMindCloud/__init__.py
-# Envia AutoMind_Info automaticamente al importar el paquete.
+# Version corregida para AutoMindCloudExperimental.
+# Usa IPython.display.HTML y carga automind-firestore.js desde jsDelivr
+# fijado al ultimo SHA real publicado en GitHub.
 
 import json
+import os
+import shutil
 import uuid
-import html as html_lib
+import zipfile
 
 
 __all__ = [
+    "Download_Zip",
     "diagnostico_automind_firestore",
     "reenviar_automind_firestore",
 ]
 
 
-_VERSION = "automind-html-debug-2026-07-03-04"
-_GITHUB_OWNER = "artemioadaysolvers"
-_GITHUB_REPO = "AutoMindCloud-API"
-_MODULE_PATH = "Data_Collector/automind-firestore.js"
+_VERSION = "automindcloud-experimental-init-2026-07-03-01"
+
+_LOGO_URL = (
+    "https://raw.githubusercontent.com/"
+    "Arthemioxz/AutoMindCloudExperimental/main/"
+    "AutoMindCloud/AutoMindCloud2.png"
+)
+
+_CLICK_SOUND_URL = (
+    "https://raw.githubusercontent.com/"
+    "Arthemioxz/AutoMindCloudExperimental/main/"
+    "AutoMindCloud/click_sound.mp3"
+)
+
+_GITHUB_OWNER_JS = "artemioadaysolvers"
+_GITHUB_REPO_JS = "AutoMindCloud-API"
+_MODULE_PATH_JS = "Data_Collector/automind-firestore.js"
 _GET_NOTEBOOK_TIMEOUT_SEC = 2
+_MOSTRAR_ESTADO_AUTOMIND = True
+
+
+def _mostrar_logo():
+    try:
+        from IPython.display import Image
+        from IPython.display import display
+
+        display(Image(url=_LOGO_URL, width=700))
+
+    except Exception:
+        pass
+
+
+def _descargar_click_sound():
+    try:
+        import requests
+
+        if os.path.exists("click_sound.mp3"):
+            return
+
+        response = requests.get(_CLICK_SOUND_URL, timeout=10)
+
+        if response.status_code == 200:
+            with open("click_sound.mp3", "wb") as archivo:
+                archivo.write(response.content)
+
+    except Exception:
+        pass
+
+
+def Download_Zip(Drive_Link, Output_Name="USDModel"):
+    """Descarga un ZIP de Google Drive, lo descomprime y devuelve la carpeta."""
+    root_dir = "/content"
+    file_id = Drive_Link.split("/d/")[1].split("/")[0]
+    url = "https://drive.google.com/uc?id=" + file_id
+    zip_path = os.path.join(root_dir, Output_Name + ".zip")
+    tmp_extract = os.path.join(root_dir, "__tmp_extract_" + Output_Name)
+    final_dir = os.path.join(root_dir, Output_Name)
+
+    if os.path.exists(tmp_extract):
+        shutil.rmtree(tmp_extract)
+
+    os.makedirs(tmp_extract, exist_ok=True)
+
+    if os.path.exists(final_dir):
+        shutil.rmtree(final_dir)
+
+    import gdown
+
+    gdown.download(url, zip_path, quiet=True)
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(tmp_extract)
+
+    def junk(name):
+        return name.startswith(".") or name == "__MACOSX"
+
+    visibles = [n for n in os.listdir(tmp_extract) if not junk(n)]
+
+    if len(visibles) == 1:
+        posible_dir = os.path.join(tmp_extract, visibles[0])
+
+        if os.path.isdir(posible_dir):
+            shutil.move(posible_dir, final_dir)
+            shutil.rmtree(tmp_extract, ignore_errors=True)
+            return final_dir
+
+    os.makedirs(final_dir, exist_ok=True)
+
+    for nombre in visibles:
+        origen = os.path.join(tmp_extract, nombre)
+        destino = os.path.join(final_dir, nombre)
+        shutil.move(origen, destino)
+
+    shutil.rmtree(tmp_extract, ignore_errors=True)
+    return final_dir
 
 
 def _obtener_automind_info():
@@ -60,11 +155,11 @@ def _json_seguro_para_javascript(data):
     return texto
 
 
-def _crear_script(auto_mind_info, status_id):
+def _crear_script_automind(auto_mind_info, status_id):
     auto_mind_json = _json_seguro_para_javascript(auto_mind_info)
-    owner_json = json.dumps(_GITHUB_OWNER)
-    repo_json = json.dumps(_GITHUB_REPO)
-    path_json = json.dumps(_MODULE_PATH)
+    owner_json = json.dumps(_GITHUB_OWNER_JS)
+    repo_json = json.dumps(_GITHUB_REPO_JS)
+    module_path_json = json.dumps(_MODULE_PATH_JS)
     status_id_json = json.dumps(status_id)
 
     lineas = []
@@ -84,16 +179,15 @@ def _crear_script(auto_mind_info, status_id):
     lineas.append("    statusEl.textContent = text;")
     lineas.append("  }")
     lineas.append("  try {")
-    lineas.append("    show('Iniciando envio...');")
+    lineas.append("    show('Consultando ultimo commit de GitHub...');")
     lineas.append("    const autoMindInfo = " + auto_mind_json + ";")
     lineas.append("    const owner = " + owner_json + ";")
     lineas.append("    const repo = " + repo_json + ";")
-    lineas.append("    const modulePath = " + path_json + ";")
+    lineas.append("    const modulePath = " + module_path_json + ";")
     lineas.append("    const params = new URLSearchParams();")
     lineas.append("    params.set('path', modulePath);")
     lineas.append("    params.set('per_page', '1');")
     lineas.append("    const githubApiUrl = 'https://api.github.com/repos/' + owner + '/' + repo + '/commits?' + params.toString();")
-    lineas.append("    show('Consultando ultimo commit...', { githubApiUrl });")
     lineas.append("    const commitResponse = await fetch(githubApiUrl, {")
     lineas.append("      cache: 'no-store',")
     lineas.append("      headers: { Accept: 'application/vnd.github+json' }")
@@ -113,7 +207,7 @@ def _crear_script(auto_mind_info, status_id):
     lineas.append("    if (!modulo || typeof modulo.enviarAutoMindFirestore !== 'function') {")
     lineas.append("      throw new Error('No existe enviarAutoMindFirestore en el modulo cargado.');")
     lineas.append("    }")
-    lineas.append("    show('Modulo cargado. Enviando a Firestore...', { latestSha, moduleUrl });")
+    lineas.append("    show('Enviando a Firestore...', { latestSha, moduleUrl });")
     lineas.append("    const resultado = await modulo.enviarAutoMindFirestore(autoMindInfo);")
     lineas.append("    window.__AutoMindCloud_lastResult = resultado;")
     lineas.append("    if (!resultado || resultado.ok !== true) {")
@@ -141,40 +235,27 @@ def reenviar_automind_firestore():
         from IPython.display import HTML
         from IPython.display import display
 
-        print("[AutoMindCloud] __init__ cargado")
-        print("version:", _VERSION)
-        print("archivo:", globals().get("__file__", "desconocido"))
-
         auto_mind_info = _obtener_automind_info()
         instance_id = "automind_sender_" + uuid.uuid4().hex
         status_id = instance_id + "_status"
-        script = _crear_script(auto_mind_info, status_id)
+        script = _crear_script_automind(auto_mind_info, status_id)
 
-        header = "[AutoMindCloud] __init__ cargado"
-        header += "\nversion: " + _VERSION
-        header += "\narchivo: " + globals().get("__file__", "desconocido")
+        html = ""
 
-        html = '<pre style="'
-        html += "white-space:pre-wrap;"
-        html += "font:12px/1.45 monospace;"
-        html += "background:#1f2937;"
-        html += "color:#e5e7eb;"
-        html += "border:1px solid #4b5563;"
-        html += "border-radius:6px;"
-        html += "padding:10px;"
-        html += "margin:8px 0;"
-        html += '">' + html_lib.escape(header) + "</pre>"
+        if _MOSTRAR_ESTADO_AUTOMIND:
+            html += '<pre id="' + status_id + '" style="'
+            html += "white-space:pre-wrap;"
+            html += "font:12px/1.45 monospace;"
+            html += "background:#111827;"
+            html += "color:#d1fae5;"
+            html += "border:1px solid #374151;"
+            html += "border-radius:6px;"
+            html += "padding:10px;"
+            html += "margin:8px 0;"
+            html += '">[AutoMindCloud] Preparando envio...</pre>'
+        else:
+            html += '<div id="' + status_id + '" style="display:none"></div>'
 
-        html += '<pre id="' + status_id + '" style="'
-        html += "white-space:pre-wrap;"
-        html += "font:12px/1.45 monospace;"
-        html += "background:#111827;"
-        html += "color:#d1fae5;"
-        html += "border:1px solid #374151;"
-        html += "border-radius:6px;"
-        html += "padding:10px;"
-        html += "margin:8px 0;"
-        html += '">[AutoMindCloud] Preparando envio...</pre>'
         html += "<script>"
         html += script
         html += "</script>"
@@ -199,12 +280,16 @@ def diagnostico_automind_firestore():
     info = {
         "version": _VERSION,
         "archivo": globals().get("__file__", "desconocido"),
-        "github_owner": _GITHUB_OWNER,
-        "github_repo": _GITHUB_REPO,
-        "module_path": _MODULE_PATH,
+        "github_owner_js": _GITHUB_OWNER_JS,
+        "github_repo_js": _GITHUB_REPO_JS,
+        "module_path_js": _MODULE_PATH_JS,
+        "usa_jsdelivr_con_sha": True,
+        "usa_main_en_jsdelivr": False,
     }
 
     print(json.dumps(info, indent=2, ensure_ascii=False))
     return info
 
 
+_mostrar_logo()
+_descargar_click_sound()
