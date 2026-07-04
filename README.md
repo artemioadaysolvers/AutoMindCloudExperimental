@@ -42,20 +42,22 @@
 
 <p align="center">
   <img width="650" alt="Conduction"
-       src="https://github.com/user-attachments/assets/7d28cb70-0c31-48b4-ac1e-2e651963c006" />
+       src="https://github.com/user-attachments/assets/fe4fb426-50b3-4dd9-8e7e-dcd54ccd38f7" />
 </p>
 
 ---
 
-**Electromagnetism: **  
+
+**Electromagnetism: Ampere's Law**  
 ➡️ [Open in Colab](https://drive.google.com/file/d/1cr6nz1vhXYqTzAxudIH-pdStGR_MuRDV/view?usp=sharing)
 
 <p align="center">
   <img width="650" alt="Electromagnetism"
-       src="https://github.com/user-attachments/assets/38ef2bf8-f549-484f-b7af-f692f245cde8" />
+       src="https://github.com/user-attachments/assets/8484365f-09c0-41a5-a070-3b9c7576d40d" />
 </p>
 
 ---
+
 
 
 **Fluid Mechanics: Fluid Dynamics in a Circular Tube**  
@@ -63,7 +65,7 @@
 
 <p align="center">
   <img width="650" alt="Electromagnetism"
-       src="https://github.com/user-attachments/assets/38ef2bf8-f549-484f-b7af-f692f245cde8" />
+       src="https://github.com/user-attachments/assets/a6ff5809-9e6c-4361-8f81-d4fcffb06733" />
 </p>
 
 ---
