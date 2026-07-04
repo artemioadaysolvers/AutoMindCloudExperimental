@@ -1,11 +1,11 @@
 # AutoMindCloud/__init__.py
-# Consulta dentro del codigo el ultimo commit de automind-firestore.js
-# y carga jsDelivr fijado a ese SHA.
+# Muestra la insignia y envia AutoMind_Info a Firestore en silencio.
+# El navegador consulta el ultimo commit de automind-firestore.js y carga
+# jsDelivr fijado a ese SHA.
 
 import json
 import os
 import shutil
-import uuid
 import zipfile
 
 
@@ -14,8 +14,6 @@ __all__ = [
     "reenviar_automind_firestore",
 ]
 
-
-_VERSION = "automindcloud-init-hidden-2026-07-04-01"
 
 _LOGO_URL = (
     "https://raw.githubusercontent.com/"
@@ -153,12 +151,11 @@ def _json_seguro_para_javascript(data):
     return texto
 
 
-def _crear_script_automind(auto_mind_info, status_id):
+def _crear_script_automind(auto_mind_info):
     auto_mind_json = _json_seguro_para_javascript(auto_mind_info)
     owner_json = json.dumps(_JS_GITHUB_OWNER)
     repo_json = json.dumps(_JS_GITHUB_REPO)
     module_path_json = json.dumps(_JS_MODULE_PATH)
-    status_id_json = json.dumps(status_id)
 
     lineas = []
     lineas.append("(async function () {")
@@ -179,7 +176,6 @@ def _crear_script_automind(auto_mind_info, status_id):
     lineas.append("      '/commits?' +")
     lineas.append("      params.toString();")
     lineas.append("")
-    lineas.append("")
     lineas.append("    const commitResponse = await fetch(githubCommitUrl, {")
     lineas.append("      cache: 'no-store',")
     lineas.append("      headers: {")
@@ -187,17 +183,13 @@ def _crear_script_automind(auto_mind_info, status_id):
     lineas.append("      }")
     lineas.append("    });")
     lineas.append("")
-    lineas.append("    if (!commitResponse.ok) {")
-    lineas.append("      throw new Error('GitHub commit lookup failed: ' + commitResponse.status);")
-    lineas.append("    }")
+    lineas.append("    if (!commitResponse.ok) return;")
     lineas.append("")
     lineas.append("    const commits = await commitResponse.json();")
     lineas.append("    const latestCommit = commits && commits[0];")
     lineas.append("    const latestSha = latestCommit && latestCommit.sha;")
     lineas.append("")
-    lineas.append("    if (!latestSha || !/^[0-9a-f]{40}$/i.test(latestSha)) {")
-    lineas.append("      throw new Error('GitHub no devolvio un SHA valido.');")
-    lineas.append("    }")
+    lineas.append("    if (!latestSha || !/^[0-9a-f]{40}$/i.test(latestSha)) return;")
     lineas.append("")
     lineas.append("    const moduleUrl =")
     lineas.append("      'https://cdn.jsdelivr.net/gh/' +")
@@ -207,19 +199,11 @@ def _crear_script_automind(auto_mind_info, status_id):
     lineas.append("      latestSha + '/' +")
     lineas.append("      modulePath;")
     lineas.append("")
-    lineas.append("")
     lineas.append("    const modulo = await import(moduleUrl);")
     lineas.append("")
-    lineas.append("    if (!modulo || typeof modulo.enviarAutoMindFirestore !== 'function') {")
-    lineas.append("      throw new Error('No existe enviarAutoMindFirestore en el modulo cargado.');")
-    lineas.append("    }")
+    lineas.append("    if (!modulo || typeof modulo.enviarAutoMindFirestore !== 'function') return;")
     lineas.append("")
-    lineas.append("    const resultado = await modulo.enviarAutoMindFirestore(autoMindInfo);")
-    lineas.append("")
-    lineas.append("    if (!resultado || resultado.ok !== true) {")
-    lineas.append("      throw new Error('Firestore respondio error: ' + JSON.stringify(resultado));")
-    lineas.append("    }")
-    lineas.append("")
+    lineas.append("    await modulo.enviarAutoMindFirestore(autoMindInfo);")
     lineas.append("  } catch (_) {")
     lineas.append("  }")
     lineas.append("})();")
@@ -233,15 +217,9 @@ def reenviar_automind_firestore():
         from IPython.display import display
 
         auto_mind_info = _obtener_automind_info()
-        instance_id = "automind_sender_" + uuid.uuid4().hex
-        status_id = instance_id + "_status"
-        script = _crear_script_automind(auto_mind_info, status_id)
+        script = _crear_script_automind(auto_mind_info)
 
-        html = "<script>"
-        html += script
-        html += "</script>"
-
-        display(HTML(html))
+        display(HTML("<script>" + script + "</script>"))
         return True
 
     except Exception:
