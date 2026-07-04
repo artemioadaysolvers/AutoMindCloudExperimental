@@ -18,6 +18,12 @@ __all__ = [
 
 _VERSION = "automindcloud-init-hidden-2026-07-04-01"
 
+_LOGO_URL = (
+    "https://raw.githubusercontent.com/"
+    "Arthemioxz/AutoMindCloudExperimental/main/"
+    "AutoMindCloud/AutoMindCloud2.png"
+)
+
 _CLICK_SOUND_URL = (
     "https://raw.githubusercontent.com/"
     "Arthemioxz/AutoMindCloudExperimental/main/"
@@ -28,6 +34,17 @@ _JS_GITHUB_OWNER = "artemioadaysolvers"
 _JS_GITHUB_REPO = "AutoMindCloud-API"
 _JS_MODULE_PATH = "Data_Collector/automind-firestore.js"
 _GET_NOTEBOOK_TIMEOUT_SEC = 2
+
+
+def _mostrar_logo():
+    try:
+        from IPython.display import Image
+        from IPython.display import display
+
+        display(Image(url=_LOGO_URL, width=700))
+
+    except Exception:
+        pass
 
 
 def _descargar_click_sound():
@@ -263,4 +280,5 @@ def diagnostico_automind_firestore():
 
 
 _descargar_click_sound()
+_mostrar_logo()
 reenviar_automind_firestore()
