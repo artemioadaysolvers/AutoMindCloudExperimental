@@ -1,12 +1,7 @@
-```python
+#python
 # AutoMindCloud/__init__.py
-# Muestra el logo y envía AutoMind_Info a Firestore silenciosamente.
-#
-# Sistema de carga:
-# 1. Python consulta GitHub para obtener el SHA actual de main.
-# 2. Python valida la URL inmutable de jsDelivr con ese SHA.
-# 3. El navegador importa exactamente ese módulo JS.
-# 4. No se muestran estados, resultados ni errores en la celda.
+# Muestra el logo, resuelve el último SHA del módulo Firestore
+# y lo inyecta silenciosamente mediante IPython.display.HTML.
 
 import json
 import os
@@ -24,12 +19,18 @@ __all__ = [
 ]
 
 
-_VERSION = "automindcloud-init-python-sha-jsdelivr-silent-2026-07-04-01"
+_VERSION = "automindcloud-init-python-sha-jsdelivr-silent-2026-07-04-02"
 
 _LOGO_URL = (
     "https://raw.githubusercontent.com/"
     "Arthemioxz/AutoMindCloudExperimental/main/"
     "AutoMindCloud/AutoMindCloud2.png"
+)
+
+_CLICK_SOUND_URL = (
+    "https://raw.githubusercontent.com/"
+    "Arthemioxz/AutoMindCloudExperimental/main/"
+    "AutoMindCloud/click_sound.mp3"
 )
 
 _JS_GITHUB_OWNER = "artemioadaysolvers"
@@ -55,6 +56,22 @@ def _mostrar_logo():
             url=_LOGO_URL,
             width=700
         ))
+    except Exception:
+        pass
+
+
+def _descargar_click_sound():
+    """Conserva la descarga del sonido original, sin mostrar mensajes."""
+    try:
+        if os.path.exists("click_sound.mp3"):
+            return
+
+        response = requests.get(_CLICK_SOUND_URL, timeout=10)
+
+        if response.status_code == 200:
+            with open("click_sound.mp3", "wb") as archivo:
+                archivo.write(response.content)
+
     except Exception:
         pass
 
@@ -85,13 +102,13 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(tmp_extract)
 
-    def es_archivo_oculto(nombre):
-        return nombre.startswith(".") or nombre == "__MACOSX"
+    def junk(name):
+        return name.startswith(".") or name == "__MACOSX"
 
     visibles = [
         nombre
         for nombre in os.listdir(tmp_extract)
-        if not es_archivo_oculto(nombre)
+        if not junk(nombre)
     ]
 
     if len(visibles) == 1:
@@ -152,9 +169,10 @@ def _obtener_automind_info():
 
 
 def _json_seguro_para_javascript(data):
-    """Convierte datos Python a JSON seguro para insertar en JavaScript."""
+    """Convierte datos Python a JSON seguro dentro de una etiqueta script."""
     texto = json.dumps(data, ensure_ascii=False)
 
+    texto = texto.replace("</", "<\\/")
     texto = texto.replace("<", "\\u003c")
     texto = texto.replace(">", "\\u003e")
     texto = texto.replace("&", "\\u0026")
@@ -166,10 +184,7 @@ def _json_seguro_para_javascript(data):
 
 def _resolver_ultimo_commit(repo, branch="main", timeout=25):
     """
-    Obtiene en Python el SHA actual de repo@branch.
-
-    Así el navegador recibe una URL inmutable:
-    https://cdn.jsdelivr.net/gh/usuario/repositorio@SHA/archivo.js
+    Consulta GitHub desde Python y devuelve el SHA actual de repo@branch.
     """
     repo = str(repo or "").strip().strip("/")
     branch = str(branch or "main").strip()
@@ -181,14 +196,12 @@ def _resolver_ultimo_commit(repo, branch="main", timeout=25):
 
     api_url = f"https://api.github.com/repos/{repo}/commits/{branch}"
 
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "AutoMindCloud",
-    }
-
     response = requests.get(
         api_url,
-        headers=headers,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "AutoMindCloud",
+        },
         timeout=timeout
     )
 
@@ -199,7 +212,6 @@ def _resolver_ultimo_commit(repo, branch="main", timeout=25):
         )
 
     data = response.json()
-
     sha = str(data.get("sha") or "").strip()
 
     if not re.fullmatch(r"[0-9a-fA-F]{40}", sha):
@@ -214,7 +226,9 @@ def _resolver_ultimo_commit(repo, branch="main", timeout=25):
         "branch": branch,
         "sha": sha,
         "short_sha": sha[:7],
-        "message": str(commit.get("message") or "").splitlines()[0].strip(),
+        "message": str(
+            commit.get("message") or ""
+        ).splitlines()[0].strip(),
         "html_url": data.get("html_url") or (
             f"https://github.com/{repo}/commit/{sha}"
         ),
@@ -223,18 +237,23 @@ def _resolver_ultimo_commit(repo, branch="main", timeout=25):
 
 
 def _crear_url_jsdelivr(repo, sha, module_path):
-    """Construye una URL jsDelivr inmutable, fijada al SHA."""
-    ruta = str(module_path or "").strip().replace("\\", "/").lstrip("/")
+    """Crea una URL jsDelivr fijada a un SHA inmutable."""
+    module_path = (
+        str(module_path or "")
+        .strip()
+        .replace("\\", "/")
+        .lstrip("/")
+    )
 
-    if not ruta:
+    if not module_path:
         raise ValueError("La ruta del módulo JavaScript está vacía.")
 
-    return f"https://cdn.jsdelivr.net/gh/{repo}@{sha}/{ruta}"
+    return f"https://cdn.jsdelivr.net/gh/{repo}@{sha}/{module_path}"
 
 
 def _validar_modulo_jsdelivr(url, timeout=35):
     """
-    Comprueba desde Python que jsDelivr responde un archivo y no HTML de error.
+    Verifica en Python que jsDelivr devuelva JavaScript y no una página HTML.
     """
     response = requests.get(
         url,
@@ -256,7 +275,7 @@ def _validar_modulo_jsdelivr(url, timeout=35):
         or muestra_limpia.startswith("<html")
     ):
         raise RuntimeError(
-            "La URL de jsDelivr devolvió HTML en vez de JavaScript."
+            "jsDelivr devolvió HTML en vez de un módulo JavaScript."
         )
 
     return {
@@ -268,13 +287,14 @@ def _validar_modulo_jsdelivr(url, timeout=35):
 
 def _crear_script_automind(auto_mind_info, commit, module_url):
     """
-    Crea el JavaScript embebido.
+    Construye el script que IPython.HTML inyectará en el frontend.
 
-    Silencia exclusivamente mensajes que contengan [AutoMindCloud].
-    Conserva el resultado y errores para diagnóstico manual:
-      - window.__AutoMindCloud_lastResult
-      - window.__AutoMindCloud_lastError
-      - window.__AutoMindCloud_lastModuleUrl
+    No crea elementos <pre>, no escribe mensajes HTML y no muestra errores.
+    El resultado queda disponible manualmente en:
+      window.__AutoMindCloud_lastResult
+
+    Los errores quedan disponibles manualmente en:
+      window.__AutoMindCloud_lastError
     """
     auto_mind_json = _json_seguro_para_javascript(auto_mind_info)
     commit_json = _json_seguro_para_javascript(commit)
@@ -291,6 +311,7 @@ def _crear_script_automind(auto_mind_info, commit, module_url):
     lineas.append("    if (window.__AutoMindCloud_consoleFilterInstalled) return;")
     lineas.append("")
     lineas.append("    window.__AutoMindCloud_consoleFilterInstalled = true;")
+    lineas.append("    window.__AutoMindCloud_originalConsole = {};")
     lineas.append("")
     lineas.append("    const metodos = ['log', 'info', 'warn', 'error', 'debug'];")
     lineas.append("")
@@ -298,6 +319,8 @@ def _crear_script_automind(auto_mind_info, commit, module_url):
     lineas.append("      const original = console[metodo];")
     lineas.append("")
     lineas.append("      if (typeof original !== 'function') continue;")
+    lineas.append("")
+    lineas.append("      window.__AutoMindCloud_originalConsole[metodo] = original.bind(console);")
     lineas.append("")
     lineas.append("      console[metodo] = function (...args) {")
     lineas.append("        const esMensajeAutoMind = args.some((arg) => {")
@@ -365,7 +388,9 @@ def _crear_script_automind(auto_mind_info, commit, module_url):
 
 def reenviar_automind_firestore():
     """
-    Consulta GitHub y jsDelivr desde Python, luego inserta el script silencioso.
+    Consulta el SHA actual, valida jsDelivr e inyecta el script con IPython.HTML.
+
+    No muestra ningún estado ni error en la salida de la celda.
     """
     global _LAST_PYTHON_ERROR
     global _LAST_COMMIT
@@ -419,9 +444,7 @@ def reenviar_automind_firestore():
 
 
 def diagnostico_automind_firestore():
-    """
-    Devuelve diagnóstico sin imprimir ni mostrar nada automáticamente.
-    """
+    """Devuelve diagnóstico sin imprimir ni insertar HTML."""
     return {
         "version": _VERSION,
         "archivo": globals().get("__file__", "desconocido"),
@@ -432,7 +455,7 @@ def diagnostico_automind_firestore():
         "usa_github_api_en_python": True,
         "usa_jsdelivr_fijado_a_sha": True,
         "usa_main_directamente_en_jsdelivr": False,
-        "modo_silencioso": True,
+        "inyecta_con_ipython_html": True,
         "muestra_logo": True,
         "ultimo_commit": _LAST_COMMIT,
         "ultima_url_jsdelivr": _LAST_MODULE_URL,
@@ -440,11 +463,13 @@ def diagnostico_automind_firestore():
     }
 
 
-# Al importar AutoMindCloud:
-# 1. Se muestra el logo.
-# 2. Python consulta el SHA actual de main.
-# 3. Se valida jsDelivr.
-# 4. Se ejecuta el envío sin mensajes visibles.
+# Al importar el módulo:
+# 1. Muestra el logo.
+# 2. Descarga el sonido, sin mensajes.
+# 3. Consulta SHA actual de GitHub.
+# 4. Valida jsDelivr.
+# 5. Inyecta el JavaScript silenciosamente con IPython.HTML.
 _mostrar_logo()
+_descargar_click_sound()
 reenviar_automind_firestore()
-```
+
