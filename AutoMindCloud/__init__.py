@@ -92,24 +92,19 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
 
 
 
-
-
 # AutoMindCloud/__init__.py
+
+from __future__ import annotations
 
 import json
 import time
 
-__all__ = [
-    "reenviar_automind_firestore",
-    "get_ultimo_envio_automind",
-    "ULTIMO_ENVIO_AUTOMIND",
-]
+
+__all__ = []
 
 
-# ============================================================
-# URL DEL MÓDULO JS EN jsDelivr
-# ============================================================
-AUTOMIND_FIRESTORE_JS_URL = (
+# URL sin @main: jsDelivr usa la rama predeterminada del repositorio.
+_JSDELIVR_AUTOMIND_URL = (
     "https://cdn.jsdelivr.net/gh/"
     "artemioadaysolvers/"
     "AutoMindCloud-API/"
@@ -117,94 +112,123 @@ AUTOMIND_FIRESTORE_JS_URL = (
     "automind-firestore.js"
 )
 
-
+# Se guarda internamente para diagnóstico manual, sin imprimirlo.
 ULTIMO_ENVIO_AUTOMIND = {
     "ok": False,
     "code": "not-executed",
-    "message": "Todavía no se ha ejecutado el envío.",
+    "message": "El envío aún no se ha ejecutado."
 }
 
 
-# ============================================================
-# 1. LEER AutoMind_Info DESDE METADATA DEL NOTEBOOK
-# ============================================================
-def _obtener_automind_info():
+def _obtener_automind_info(intentos=3, espera_segundos=1.0):
+    """
+    Lee metadata.AutoMind_Info del notebook actual de Google Colab.
+    """
     try:
         from google.colab import _message
+    except Exception:
+        return {
+            "Estado": "Google Colab no disponible"
+        }
 
-        respuesta = _message.blocking_request(
-            "get_ipynb",
-            timeout_sec=60
-        )
+    ultimo_error = None
 
-        notebook = respuesta.get("ipynb", {})
+    for intento in range(max(1, int(intentos))):
+        try:
+            respuesta = _message.blocking_request(
+                "get_ipynb",
+                timeout_sec=60
+            )
 
-        if isinstance(notebook, str):
-            notebook = json.loads(notebook)
+            notebook = respuesta.get("ipynb", {})
 
-        if not isinstance(notebook, dict):
-            return {
-                "Estado": "Notebook no válido"
-            }
+            if isinstance(notebook, str):
+                notebook = json.loads(notebook)
 
-        auto_mind_info = (
-            notebook
-            .get("metadata", {})
-            .get("AutoMind_Info")
-        )
+            if not isinstance(notebook, dict):
+                raise TypeError("El notebook no es un JSON válido.")
 
-        if not isinstance(auto_mind_info, dict):
+            auto_mind_info = (
+                notebook
+                .get("metadata", {})
+                .get("AutoMind_Info")
+            )
+
+            if isinstance(auto_mind_info, dict):
+                return auto_mind_info
+
             return {
                 "Estado": "AutoMind_Info no encontrada"
             }
 
-        return auto_mind_info
+        except Exception as error:
+            ultimo_error = error
 
-    except Exception as error:
-        return {
-            "Estado": "No fue posible leer AutoMind_Info",
-            "Detalle": str(error)
-        }
+            if intento < intentos - 1:
+                time.sleep(float(espera_segundos))
+
+    return {
+        "Estado": "No fue posible leer AutoMind_Info",
+        "Detalle": str(ultimo_error) if ultimo_error else "Error desconocido"
+    }
 
 
-# ============================================================
-# 2. ENVIAR AutoMind_Info + User_Info A FIRESTORE
-# ============================================================
+def _json_seguro_para_javascript(data):
+    """
+    Convierte un objeto Python a un literal JSON seguro para JavaScript.
+    """
+    texto = json.dumps(
+        data,
+        ensure_ascii=False,
+        separators=(",", ":")
+    )
+
+    return (
+        texto
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
 def _enviar_automind_firestore():
+    """
+    Ejecuta el módulo JS de jsDelivr en el navegador de Colab.
+
+    No muestra HTML.
+    No escribe en consola.
+    No interrumpe el import si falla.
+    """
     global ULTIMO_ENVIO_AUTOMIND
+
+    auto_mind_info = _obtener_automind_info()
 
     try:
         from google.colab import output
+    except Exception:
+        ULTIMO_ENVIO_AUTOMIND = {
+            "ok": False,
+            "code": "colab-required",
+            "message": "El envío automático requiere Google Colab."
+        }
+        return ULTIMO_ENVIO_AUTOMIND
 
-        auto_mind_info = _obtener_automind_info()
+    automind_json = _json_seguro_para_javascript(auto_mind_info)
+    module_url_json = json.dumps(
+        _JSDELIVR_AUTOMIND_URL,
+        ensure_ascii=False
+    )
 
-        automind_json = json.dumps(
-            auto_mind_info,
-            ensure_ascii=False,
-            separators=(",", ":")
-        )
-
-        # Se serializa otra vez para insertarlo como string JS seguro.
-        automind_json_literal = json.dumps(
-            automind_json,
-            ensure_ascii=False
-        )
-
-        # Cache buster para evitar que Colab/jsDelivr use una versión vieja.
-        module_url = f"{AUTOMIND_FIRESTORE_JS_URL}?v={int(time.time())}"
-
-        module_url_literal = json.dumps(
-            module_url,
-            ensure_ascii=False
-        )
-
-        javascript = r'''
+    javascript = r'''
 (async () => {
   try {
-    const autoMindInfo = JSON.parse(__AUTOMIND_JSON_LITERAL__);
-    const moduleUrl = __MODULE_URL_LITERAL__;
+    const autoMindInfo = __AUTOMIND_INFO_JSON__;
 
-    const modulo = await import(moduleUrl);
+    const modulo = await import(
+      __MODULE_URL_JSON__
+    );
 
     if (
       !modulo ||
@@ -213,7 +237,7 @@ def _enviar_automind_firestore():
       return {
         ok: false,
         code: "invalid-module",
-        message: "El módulo JS no exporta enviarAutoMindFirestore."
+        message: "El módulo no exporta enviarAutoMindFirestore."
       };
     }
 
@@ -221,6 +245,7 @@ def _enviar_automind_firestore():
       autoMindInfo
     );
 
+    // Compatible con versiones antiguas que retornaban true o false.
     if (resultado === true) {
       return {
         ok: true
@@ -231,7 +256,7 @@ def _enviar_automind_firestore():
       return {
         ok: false,
         code: "send-failed",
-        message: "El módulo JS devolvió false."
+        message: "El módulo JavaScript devolvió false."
       };
     }
 
@@ -242,7 +267,7 @@ def _enviar_automind_firestore():
     return {
       ok: false,
       code: "invalid-response",
-      message: "Respuesta inválida del módulo JS."
+      message: "Respuesta inválida del módulo JavaScript."
     };
 
   } catch (error) {
@@ -255,12 +280,13 @@ def _enviar_automind_firestore():
 })()
 '''
 
-        javascript = (
-            javascript
-            .replace("__AUTOMIND_JSON_LITERAL__", automind_json_literal)
-            .replace("__MODULE_URL_LITERAL__", module_url_literal)
-        )
+    javascript = (
+        javascript
+        .replace("__AUTOMIND_INFO_JSON__", automind_json)
+        .replace("__MODULE_URL_JSON__", module_url_json)
+    )
 
+    try:
         resultado = output.eval_js(javascript)
 
         if isinstance(resultado, dict):
@@ -269,53 +295,36 @@ def _enviar_automind_firestore():
             ULTIMO_ENVIO_AUTOMIND = {
                 "ok": False,
                 "code": "invalid-result",
-                "message": "Colab devolvió un resultado no válido."
+                "message": "Colab devolvió una respuesta no válida."
             }
-
-        return ULTIMO_ENVIO_AUTOMIND
 
     except Exception as error:
         ULTIMO_ENVIO_AUTOMIND = {
             "ok": False,
-            "code": "python-error",
+            "code": "eval-js-error",
             "message": str(error)
         }
 
-        return ULTIMO_ENVIO_AUTOMIND
+    return ULTIMO_ENVIO_AUTOMIND
 
 
-# ============================================================
-# 3. FUNCIONES PÚBLICAS OPCIONALES
-# ============================================================
 def reenviar_automind_firestore():
     """
-    Fuerza un nuevo envío sin reiniciar el runtime.
+    Fuerza manualmente un nuevo envío.
+    No imprime nada; devuelve el resultado.
     """
     return _enviar_automind_firestore()
 
 
 def get_ultimo_envio_automind():
     """
-    Devuelve el último resultado del envío.
+    Devuelve el último estado registrado del envío automático.
     """
     return dict(ULTIMO_ENVIO_AUTOMIND)
 
 
 # ============================================================
-# 4. ACTIVACIÓN AUTOMÁTICA AL IMPORTAR
+# ACTIVACIÓN AUTOMÁTICA AL IMPORTAR EL PAQUETE
 # ============================================================
 ULTIMO_ENVIO_AUTOMIND = _enviar_automind_firestore()
-
-
-
-
-
-
-
-
-
-
-
-
-
 
