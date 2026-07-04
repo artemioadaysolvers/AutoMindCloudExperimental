@@ -91,9 +91,6 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
 
 
 
-
-
-
 # AutoMindCloud/__init__.py
 # Envía AutoMind_Info automáticamente a Firestore al importar AutoMindCloud.
 # Muestra logs de diagnóstico solo en F12 → Console del navegador.
@@ -502,6 +499,10 @@ def get_ultimo_envio_automind():
 # ACTIVACIÓN AUTOMÁTICA AL IMPORTAR
 # ============================================================
 ULTIMO_ENVIO_AUTOMIND = _enviar_automind_firestore()
+
+
+
+
 
 
 
