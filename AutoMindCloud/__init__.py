@@ -1,11 +1,10 @@
 import json
 import os
 import shutil
+import threading
 import uuid
 import zipfile
-from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 
 # ============================================================
@@ -21,11 +20,20 @@ __all__ = [
 # ============================================================
 # CONFIGURACIÓN
 # ============================================================
-_ZONA_HORARIA = "America/Santiago"
+MOSTRAR_BANNER_AL_IMPORTAR = True
+
+# Debe enviarse automáticamente al importar el paquete,
+# pero sin bloquear la ejecución de la celda.
+ENVIAR_AUTOMATICAMENTE_AL_IMPORTAR = True
+
+# Límite de espera solo para leer metadata.AutoMind_Info.
+TIEMPO_MAXIMO_LEER_NOTEBOOK_SEGUNDOS = 6
+
+_AUTO_ENVIO_INICIADO = False
 
 
 # ============================================================
-# RECURSOS VISUALES / SONIDO AL IMPORTAR
+# RECURSOS VISUALES / SONIDO
 # ============================================================
 _BANNER_URL = (
     "https://raw.githubusercontent.com/"
@@ -44,8 +52,11 @@ _CLICK_SOUND_URL = (
 _CLICK_SOUND_PATH = "/content/click_sound.mp3"
 
 
-def _cargar_recursos_iniciales():
-    """Muestra la imagen y descarga el sonido sin detener el import."""
+def _mostrar_banner():
+    """
+    Muestra el banner mediante URL.
+    No descarga el archivo desde Python.
+    """
     try:
         from IPython.display import Image, display
 
@@ -58,20 +69,28 @@ def _cargar_recursos_iniciales():
     except Exception:
         pass
 
+
+def _descargar_click_sound():
+    """
+    Descarga el sonido solo si se llama explícitamente.
+    No se ejecuta al importar AutoMindCloud.
+    """
     try:
         import requests
 
         response = requests.get(
             _CLICK_SOUND_URL,
-            timeout=20
+            timeout=10
         )
         response.raise_for_status()
 
         with open(_CLICK_SOUND_PATH, "wb") as archivo:
             archivo.write(response.content)
 
+        return _CLICK_SOUND_PATH
+
     except Exception:
-        pass
+        return None
 
 
 # ============================================================
@@ -161,7 +180,7 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
                     and root_resolved not in destination.parents
                 ):
                     raise RuntimeError(
-                        f"ZIP inseguro: ruta no permitida: "
+                        "ZIP inseguro: ruta no permitida: "
                         f"{member.filename}"
                     )
 
@@ -222,14 +241,24 @@ _JSDELIVR_URL = (
 )
 
 
-def _obtener_automind_info():
-    """Obtiene metadata.AutoMind_Info del notebook actual."""
+def _obtener_automind_info(timeout_segundos):
+    """
+    Lee metadata.AutoMind_Info del notebook actual.
+
+    Esta función puede tardar algunos segundos, por lo que
+    no se ejecuta directamente en el hilo principal al importar.
+    """
     try:
         from google.colab import _message
 
+        timeout_segundos = max(
+            1,
+            min(int(timeout_segundos), 12)
+        )
+
         respuesta = _message.blocking_request(
             "get_ipynb",
-            timeout_sec=60
+            timeout_sec=timeout_segundos
         )
 
         notebook = respuesta.get("ipynb", {})
@@ -262,20 +291,11 @@ def _obtener_automind_info():
         }
 
 
-def _obtener_fecha_local():
-    """
-    Retorna fecha en formato DD-MM-AAAA.
-
-    Ejemplo:
-        03-07-2026
-    """
-    return datetime.now(
-        ZoneInfo(_ZONA_HORARIA)
-    ).strftime("%d-%m-%Y")
-
-
 def _json_seguro_para_javascript(data):
-    """Convierte un objeto Python a JSON seguro para usar dentro de <script>."""
+    """
+    Convierte objetos Python a JSON seguro para insertarlos
+    dentro de una etiqueta <script>.
+    """
     texto = json.dumps(
         data,
         ensure_ascii=False
@@ -291,36 +311,32 @@ def _json_seguro_para_javascript(data):
     )
 
 
-def reenviar_automind_firestore():
+def _inyectar_envio_frontend(auto_mind_info):
     """
-    Inserta JavaScript en el frontend de Colab.
+    Inserta JavaScript en el frontend.
 
-    El módulo remoto recibe:
-        enviarAutoMindFirestore(autoMindInfo, fechaLocal)
-
-    Ejemplo de fecha enviada:
-        03-07-2026
+    Solo entrega AutoMind_Info al módulo remoto.
+    Fecha, hora, zona horaria, IP y User_Info se consultan
+    exclusivamente desde automind-firestore.js en el navegador.
     """
     try:
         from IPython.display import HTML, display
 
-        auto_mind_info = _obtener_automind_info()
-        fecha_local = _obtener_fecha_local()
+        if not isinstance(auto_mind_info, dict):
+            auto_mind_info = {
+                "Estado": "AutoMind_Info no válida"
+            }
 
         automind_json = _json_seguro_para_javascript(
             auto_mind_info
         )
 
-        fecha_json = _json_seguro_para_javascript(
-            fecha_local
+        js_url_json = _json_seguro_para_javascript(
+            _JSDELIVR_URL
         )
 
         instance_id = (
             f"automind_sender_{uuid.uuid4().hex}"
-        )
-
-        js_url_json = _json_seguro_para_javascript(
-            _JSDELIVR_URL
         )
 
         html = r"""
@@ -330,7 +346,6 @@ def reenviar_automind_firestore():
 (async () => {
   try {
     const autoMindInfo = __AUTOMIND_INFO_JSON__;
-    const fechaLocal = __FECHA_LOCAL_JSON__;
     const moduleUrl = __MODULE_URL_JSON__;
 
     const modulo = await import(moduleUrl);
@@ -339,26 +354,15 @@ def reenviar_automind_firestore():
       !modulo ||
       typeof modulo.enviarAutoMindFirestore !== "function"
     ) {
-      console.error(
-        "[AutoMindCloud] No existe enviarAutoMindFirestore."
-      );
       return;
     }
 
     await modulo.enviarAutoMindFirestore(
-      autoMindInfo,
-      fechaLocal
+      autoMindInfo
     );
 
-    console.info(
-      "[AutoMindCloud] Envío iniciado correctamente."
-    );
-
-  } catch (error) {
-    console.error(
-      "[AutoMindCloud] Error durante envío:",
-      error
-    );
+  } catch (_) {
+    // Sin mensajes visuales ni consola.
   }
 })();
 </script>
@@ -372,10 +376,6 @@ def reenviar_automind_firestore():
                 automind_json
             )
             .replace(
-                "__FECHA_LOCAL_JSON__",
-                fecha_json
-            )
-            .replace(
                 "__MODULE_URL_JSON__",
                 js_url_json
             )
@@ -384,17 +384,65 @@ def reenviar_automind_firestore():
         display(HTML(html))
         return True
 
-    except Exception as error:
-        print(
-            "[AutoMindCloud] No fue posible iniciar el envío:",
-            error
-        )
+    except Exception:
         return False
+
+
+def reenviar_automind_firestore(
+    autoMindInfo=None,
+    timeout_segundos=TIEMPO_MAXIMO_LEER_NOTEBOOK_SEGUNDOS
+):
+    """
+    Envío manual.
+
+    Si no se recibe autoMindInfo, lee metadata.AutoMind_Info
+    desde el notebook actual y luego inyecta el JavaScript.
+    """
+    if autoMindInfo is None:
+        autoMindInfo = _obtener_automind_info(
+            timeout_segundos
+        )
+
+    return _inyectar_envio_frontend(
+        autoMindInfo
+    )
+
+
+def _envio_automatico_en_segundo_plano():
+    """
+    Inicia el envío automático sin bloquear import AutoMindCloud.
+    """
+    global _AUTO_ENVIO_INICIADO
+
+    if _AUTO_ENVIO_INICIADO:
+        return
+
+    _AUTO_ENVIO_INICIADO = True
+
+    def tarea():
+        auto_mind_info = _obtener_automind_info(
+            TIEMPO_MAXIMO_LEER_NOTEBOOK_SEGUNDOS
+        )
+
+        _inyectar_envio_frontend(
+            auto_mind_info
+        )
+
+    hilo = threading.Thread(
+        target=tarea,
+        daemon=True,
+        name="AutoMindFirestoreSender"
+    )
+
+    hilo.start()
 
 
 # ============================================================
 # EJECUCIÓN AUTOMÁTICA AL HACER:
 # import AutoMindCloud
 # ============================================================
-_cargar_recursos_iniciales()
-reenviar_automind_firestore()
+if MOSTRAR_BANNER_AL_IMPORTAR:
+    _mostrar_banner()
+
+if ENVIAR_AUTOMATICAMENTE_AL_IMPORTAR:
+    _envio_automatico_en_segundo_plano()
