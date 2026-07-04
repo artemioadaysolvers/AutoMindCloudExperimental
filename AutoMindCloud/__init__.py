@@ -1,17 +1,19 @@
 from pathlib import Path
+import zipfile
+import py_compile
 import textwrap
 
-code = r'''import json
+init_code = r'''import json
 import os
 import shutil
+import time
 import uuid
 import zipfile
 from pathlib import Path
 
 
 # ============================================================
-# FUNCIONES QUE SE EXPORTAN CON:
-# from AutoMindCloud import *
+# EXPORTACIONES PÚBLICAS
 # ============================================================
 __all__ = [
     "Download_Zip",
@@ -23,20 +25,11 @@ __all__ = [
 # CONFIGURACIÓN
 # ============================================================
 MOSTRAR_BANNER_AL_IMPORTAR = True
-
-# Se envía automáticamente al importar el paquete.
-# La inyección HTML debe ocurrir en el hilo principal de Colab.
 ENVIAR_AUTOMATICAMENTE_AL_IMPORTAR = True
-
-# Límite de espera solo para leer metadata.AutoMind_Info.
 TIEMPO_MAXIMO_LEER_NOTEBOOK_SEGUNDOS = 6
 
 _AUTO_ENVIO_INICIADO = False
 
-
-# ============================================================
-# RECURSOS VISUALES / SONIDO
-# ============================================================
 _BANNER_URL = (
     "https://raw.githubusercontent.com/"
     "Arthemioxz/"
@@ -53,9 +46,20 @@ _CLICK_SOUND_URL = (
 
 _CLICK_SOUND_PATH = "/content/click_sound.mp3"
 
+_JSDELIVR_URL = (
+    "https://cdn.jsdelivr.net/gh/"
+    "artemioadaysolvers/"
+    "AutoMindCloud-API/"
+    "Data_Collector/"
+    "automind-firestore.js"
+)
 
+
+# ============================================================
+# UTILIDADES VISUALES
+# ============================================================
 def _mostrar_banner():
-    """Muestra el banner mediante URL."""
+    """Muestra el banner sin descargarlo en Python."""
     try:
         from IPython.display import Image, display
 
@@ -66,17 +70,16 @@ def _mostrar_banner():
 
 def _descargar_click_sound():
     """
-    Descarga el sonido solo si se llama explícitamente.
-    No se ejecuta al importar AutoMindCloud.
+    Descarga el sonido solo cuando se llama explícitamente.
     """
     try:
         import requests
 
-        response = requests.get(_CLICK_SOUND_URL, timeout=10)
-        response.raise_for_status()
+        respuesta = requests.get(_CLICK_SOUND_URL, timeout=15)
+        respuesta.raise_for_status()
 
         with open(_CLICK_SOUND_PATH, "wb") as archivo:
-            archivo.write(response.content)
+            archivo.write(respuesta.content)
 
         return _CLICK_SOUND_PATH
 
@@ -85,20 +88,17 @@ def _descargar_click_sound():
 
 
 # ============================================================
-# DESCARGAR Y EXTRAER ZIP DE GOOGLE DRIVE
+# DESCARGAR Y EXTRAER ZIP DESDE GOOGLE DRIVE
 # ============================================================
 def Download_Zip(Drive_Link, Output_Name="USDModel"):
     """
-    Descarga un ZIP de Google Drive, lo extrae y devuelve la carpeta final.
+    Descarga un ZIP de Google Drive, lo extrae y retorna la carpeta final.
 
     Ejemplo:
         ruta = Download_Zip(
-            Drive_Link=Link,
+            Drive_Link="https://drive.google.com/file/d/...",
             Output_Name="StepModel"
         )
-
-    Retorna:
-        /content/StepModel
     """
     try:
         import gdown
@@ -121,7 +121,7 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
     root_dir.mkdir(parents=True, exist_ok=True)
 
     zip_path = root_dir / f"{output_name}.zip"
-    tmp_extract = root_dir / f"__tmp_extract_{output_name}"
+    tmp_extract = root_dir / f"__tmp_extract_{uuid.uuid4().hex}"
     final_dir = root_dir / output_name
 
     drive_link = Drive_Link.strip()
@@ -158,20 +158,20 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
 
         root_resolved = tmp_extract.resolve()
 
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            for member in zf.infolist():
-                destination = (tmp_extract / member.filename).resolve()
+        with zipfile.ZipFile(zip_path, "r") as archivo_zip:
+            for member in archivo_zip.infolist():
+                destino = (tmp_extract / member.filename).resolve()
 
                 if (
-                    destination != root_resolved
-                    and root_resolved not in destination.parents
+                    destino != root_resolved
+                    and root_resolved not in destino.parents
                 ):
                     raise RuntimeError(
-                        "ZIP inseguro: ruta no permitida: "
+                        "ZIP inseguro: contiene una ruta no permitida: "
                         f"{member.filename}"
                     )
 
-            zf.extractall(tmp_extract)
+            archivo_zip.extractall(tmp_extract)
 
         def es_basura(nombre):
             return nombre.startswith(".") or nombre == "__MACOSX"
@@ -194,7 +194,10 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
             len(visibles) == 1
             and (tmp_extract / visibles[0]).is_dir()
         ):
-            shutil.move(str(tmp_extract / visibles[0]), str(final_dir))
+            shutil.move(
+                str(tmp_extract / visibles[0]),
+                str(final_dir)
+            )
         else:
             final_dir.mkdir(parents=True, exist_ok=True)
 
@@ -211,29 +214,20 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
 
 
 # ============================================================
-# ENVÍO DE AutoMind_Info A FIRESTORE
+# AUTO MIND INFO: LECTURA DESDE METADATA DEL NOTEBOOK
 # ============================================================
-_JSDELIVR_URL = (
-    "https://cdn.jsdelivr.net/gh/"
-    "artemioadaysolvers/"
-    "AutoMindCloud-API/"
-    "Data_Collector/"
-    "automind-firestore.js"
-)
-
-
 def _obtener_automind_info(timeout_segundos):
     """
-    Lee metadata.AutoMind_Info del notebook actual.
+    Lee metadata.AutoMind_Info del notebook abierto actualmente en Colab.
     """
     try:
         from google.colab import _message
 
-        timeout_segundos = max(1, min(int(timeout_segundos), 12))
+        timeout = max(1, min(int(timeout_segundos), 12))
 
         respuesta = _message.blocking_request(
             "get_ipynb",
-            timeout_sec=timeout_segundos
+            timeout_sec=timeout
         )
 
         notebook = respuesta.get("ipynb", {})
@@ -268,7 +262,8 @@ def _obtener_automind_info(timeout_segundos):
 
 def _json_seguro_para_javascript(data):
     """
-    Convierte objetos Python a JSON seguro para una etiqueta <script>.
+    Convierte un objeto Python en JSON seguro para insertarlo dentro de
+    una etiqueta <script>.
     """
     texto = json.dumps(data, ensure_ascii=False)
 
@@ -282,13 +277,20 @@ def _json_seguro_para_javascript(data):
     )
 
 
+# ============================================================
+# ENVÍO A FIRESTORE DESDE EL FRONTEND
+# ============================================================
 def _inyectar_envio_frontend(auto_mind_info, mostrar_estado=True):
     """
-    Inserta JavaScript en la salida de la celda actual.
+    Inserta el módulo JavaScript en la salida de la celda actual.
 
-    Muestra el objeto exacto devuelto por el módulo remoto si
-    Firestore no confirma el guardado. Esto evita ocultar errores
-    como permission-denied, auth/operation-not-allowed y not-found.
+    No usa threading: en Colab, display(HTML(...)) debe ejecutarse en
+    el hilo principal para que el navegador reciba el script.
+
+    Si Firestore falla, se muestra:
+      - el código exacto del error;
+      - la respuesta cruda del módulo;
+      - la URL exacta del módulo que cargó el navegador.
     """
     try:
         from IPython.display import HTML, display
@@ -299,34 +301,36 @@ def _inyectar_envio_frontend(auto_mind_info, mostrar_estado=True):
             }
 
         automind_json = _json_seguro_para_javascript(auto_mind_info)
-        js_url_json = _json_seguro_para_javascript(_JSDELIVR_URL)
+        module_url_json = _json_seguro_para_javascript(_JSDELIVR_URL)
 
         instance_id = f"automind_sender_{uuid.uuid4().hex}"
-        estado_id = f"automind_estado_{uuid.uuid4().hex}"
-        mostrar_estado_json = "true" if mostrar_estado else "false"
+        status_id = f"automind_status_{uuid.uuid4().hex}"
+        status_visible = "block" if mostrar_estado else "none"
+        mostrar_estado_js = "true" if mostrar_estado else "false"
 
         html = r"""
 <div id="__INSTANCE_ID__" style="display:none;"></div>
 
-<div id="__STATUS_ID__" style="
-  display: __STATUS_DISPLAY__;
+<pre id="__STATUS_ID__" style="
+  display: __STATUS_VISIBLE__;
   margin: 8px 0;
   padding: 10px 12px;
   border: 1px solid #555;
   border-radius: 8px;
+  background: #111;
+  color: #eee;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   white-space: pre-wrap;
-">
-⏳ AutoMindCloud: enviando información a Firestore…
-</div>
+  overflow: auto;
+">⏳ AutoMindCloud: enviando información a Firestore…</pre>
 
 <script type="module">
 (async () => {
   const estado = document.getElementById("__STATUS_ID__");
   const mostrarEstado = __SHOW_STATUS__;
 
-  function serializarSeguro(valor) {
+  function stringifySeguro(valor) {
     try {
       const texto = JSON.stringify(valor, null, 2);
       return typeof texto === "string" ? texto : String(valor);
@@ -334,32 +338,32 @@ def _inyectar_envio_frontend(auto_mind_info, mostrar_estado=True):
       try {
         return String(valor);
       } catch (_) {
-        return "[No fue posible serializar el resultado]";
+        return "[No fue posible convertir el resultado a texto]";
       }
     }
   }
 
-  function mostrar(texto, esError) {
+  function mostrar(texto, error) {
     if (!estado) return;
 
-    if (!mostrarEstado && !esError) {
+    if (!mostrarEstado && !error) {
       estado.style.display = "none";
       return;
     }
 
     estado.style.display = "block";
-    estado.style.borderColor = esError ? "#b42318" : "#188038";
+    estado.style.borderColor = error ? "#ff6b6b" : "#51cf66";
     estado.textContent = texto;
   }
 
   try {
     const autoMindInfo = __AUTOMIND_INFO_JSON__;
-    const moduleUrl = __MODULE_URL_JSON__;
+    const baseModuleUrl = __MODULE_URL_JSON__;
 
-    // Fuerza una carga nueva del módulo remoto después de actualizar GitHub.
-    const separador = moduleUrl.includes("?") ? "&" : "?";
-    const moduleUrlConVersion = (
-      moduleUrl +
+    // Fuerza una versión fresca al actualizar el archivo en GitHub/jsDelivr.
+    const separador = baseModuleUrl.includes("?") ? "&" : "?";
+    const moduleUrl = (
+      baseModuleUrl +
       separador +
       "v=" +
       Date.now() +
@@ -367,24 +371,23 @@ def _inyectar_envio_frontend(auto_mind_info, mostrar_estado=True):
       Math.random().toString(36).slice(2)
     );
 
-    const modulo = await import(moduleUrlConVersion);
+    const modulo = await import(moduleUrl);
 
     if (
       !modulo ||
       typeof modulo.enviarAutoMindFirestore !== "function"
     ) {
-      throw new Error(
+      const error = new Error(
         "El módulo remoto no exporta enviarAutoMindFirestore.\n" +
-        "URL cargada: " + moduleUrlConVersion
+        "URL cargada: " + moduleUrl
       );
+      error.code = "module-export-missing";
+      throw error;
     }
 
     const resultado = await modulo.enviarAutoMindFirestore(autoMindInfo);
 
-    console.log(
-      "[AutoMindCloud] URL del módulo cargado:",
-      moduleUrlConVersion
-    );
+    console.log("[AutoMindCloud] URL cargada:", moduleUrl);
     console.log(
       "[AutoMindCloud] Resultado crudo de Firestore:",
       resultado
@@ -392,10 +395,12 @@ def _inyectar_envio_frontend(auto_mind_info, mostrar_estado=True):
 
     if (resultado === undefined || resultado === null) {
       const error = new Error(
-        "El módulo remoto devolvió " + String(resultado) + ".\n" +
-        "El archivo automind-firestore.js debe retornar " +
-        "{ ok: true, ... } o { ok: false, code, message }.\n" +
-        "URL cargada: " + moduleUrlConVersion
+        "El módulo remoto devolvió " + String(resultado) + ".\n\n" +
+        "Tu archivo automind-firestore.js debe retornar:\n" +
+        "{ ok: true, collectionName, ipDocument, documentId }\n" +
+        "o bien:\n" +
+        "{ ok: false, code, message }\n\n" +
+        "URL cargada:\n" + moduleUrl
       );
       error.code = "invalid-module-response";
       throw error;
@@ -403,10 +408,10 @@ def _inyectar_envio_frontend(auto_mind_info, mostrar_estado=True):
 
     if (resultado.ok !== true) {
       const error = new Error(
-        "Firestore respondió:\n" +
-        serializarSeguro(resultado) +
+        "Respuesta exacta del módulo Firestore:\n" +
+        stringifySeguro(resultado) +
         "\n\nURL cargada:\n" +
-        moduleUrlConVersion
+        moduleUrl
       );
       error.code = resultado.code || "unknown-error";
       error.firestoreResult = resultado;
@@ -414,7 +419,8 @@ def _inyectar_envio_frontend(auto_mind_info, mostrar_estado=True):
     }
 
     mostrar(
-      "✅ AutoMindCloud: guardado en\n" +
+      "✅ AutoMindCloud: guardado correctamente.\n\n" +
+      "Ruta:\n" +
       resultado.collectionName + "/" +
       resultado.ipDocument + "/JSON/" +
       resultado.documentId,
@@ -427,17 +433,19 @@ def _inyectar_envio_frontend(auto_mind_info, mostrar_estado=True):
       error
     );
 
-    if (error?.firestoreResult !== undefined) {
+    if (error && error.firestoreResult !== undefined) {
       console.error(
-        "[AutoMindCloud] Respuesta cruda devuelta por Firestore:",
+        "[AutoMindCloud] Respuesta cruda del módulo:",
         error.firestoreResult
       );
     }
 
     mostrar(
-      "❌ AutoMindCloud no pudo guardar.\n" +
-      "Código: " + (error?.code || "unknown-error") + "\n\n" +
-      "Detalle:\n" + (error?.message || String(error)),
+      "❌ AutoMindCloud no pudo guardar en Firestore.\n\n" +
+      "Código:\n" +
+      (error && error.code ? error.code : "unknown-error") +
+      "\n\nDetalle:\n" +
+      (error && error.message ? error.message : String(error)),
       true
     );
   }
@@ -448,14 +456,11 @@ def _inyectar_envio_frontend(auto_mind_info, mostrar_estado=True):
         html = (
             html
             .replace("__INSTANCE_ID__", instance_id)
-            .replace("__STATUS_ID__", estado_id)
-            .replace(
-                "__STATUS_DISPLAY__",
-                "block" if mostrar_estado else "none"
-            )
-            .replace("__SHOW_STATUS__", mostrar_estado_json)
+            .replace("__STATUS_ID__", status_id)
+            .replace("__STATUS_VISIBLE__", status_visible)
+            .replace("__SHOW_STATUS__", mostrar_estado_js)
             .replace("__AUTOMIND_INFO_JSON__", automind_json)
-            .replace("__MODULE_URL_JSON__", js_url_json)
+            .replace("__MODULE_URL_JSON__", module_url_json)
         )
 
         display(HTML(html))
@@ -463,8 +468,8 @@ def _inyectar_envio_frontend(auto_mind_info, mostrar_estado=True):
 
     except Exception as error:
         print(
-            "[AutoMindCloud] No se pudo inyectar "
-            f"el envío a Firestore: {error}"
+            "[AutoMindCloud] No se pudo inyectar el envío a Firestore:\n"
+            f"{type(error).__name__}: {error}"
         )
         return False
 
@@ -474,10 +479,16 @@ def reenviar_automind_firestore(
     timeout_segundos=TIEMPO_MAXIMO_LEER_NOTEBOOK_SEGUNDOS
 ):
     """
-    Envío manual.
+    Envía AutoMind_Info a Firestore manualmente.
 
-    Si no se recibe autoMindInfo, lee metadata.AutoMind_Info
-    desde el notebook actual y luego inyecta el JavaScript.
+    Uso:
+        import AutoMindCloud
+        AutoMindCloud.reenviar_automind_firestore()
+
+    También puedes entregar un diccionario de forma explícita:
+        AutoMindCloud.reenviar_automind_firestore(
+            {"Modelo": "Prueba"}
+        )
     """
     if autoMindInfo is None:
         autoMindInfo = _obtener_automind_info(timeout_segundos)
@@ -489,16 +500,14 @@ def reenviar_automind_firestore(
 
 
 # ============================================================
-# ENVÍO AUTOMÁTICO AL HACER:
-# import AutoMindCloud
+# ENVÍO AUTOMÁTICO AL IMPORTAR
 # ============================================================
 def _envio_automatico_al_importar():
     """
-    Ejecuta el envío en el hilo principal.
+    Realiza el envío durante la ejecución de la celda de importación.
 
-    No se usa threading: Colab debe recibir display(HTML(...))
-    durante la ejecución de la celda para que el JavaScript se
-    ejecute en el frontend.
+    No usa un thread porque Colab no garantiza que un display generado
+    fuera del hilo principal llegue al frontend del navegador.
     """
     global _AUTO_ENVIO_INICIADO
 
@@ -524,7 +533,14 @@ if ENVIAR_AUTOMATICAMENTE_AL_IMPORTAR:
     _envio_automatico_al_importar()
 '''
 
-out = Path("/mnt/data/AutoMindCloud___init___diagnostico_completo.py")
-out.write_text(code, encoding="utf-8")
-print(f"Creado: {out}")
-print(f"Líneas: {len(code.splitlines())}")
+init_path = Path("/mnt/data/__init__.py")
+init_path.write_text(init_code, encoding="utf-8")
+py_compile.compile(str(init_path), doraise=True)
+
+zip_path = Path("/mnt/data/AutoMindCloud_init_corregido.zip")
+with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+    z.write(init_path, arcname="AutoMindCloud/__init__.py")
+
+print(f"Archivo: {init_path}")
+print(f"ZIP: {zip_path}")
+print(f"Líneas: {len(init_code.splitlines())}")
