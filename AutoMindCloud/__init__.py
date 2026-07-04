@@ -1,4 +1,4 @@
-    # AutoMindCloud/__init__.py
+# AutoMindCloud/__init__.py
 # Envia AutoMind_Info automaticamente al importar el paquete.
 
 import json
@@ -55,15 +55,31 @@ def _json_seguro_para_javascript(data):
     return texto
 
 
-def _crear_script(auto_mind_info):
+def _crear_script(auto_mind_info, status_id):
     auto_mind_json = _json_seguro_para_javascript(auto_mind_info)
     owner_json = json.dumps(_GITHUB_OWNER)
     repo_json = json.dumps(_GITHUB_REPO)
     path_json = json.dumps(_MODULE_PATH)
+    status_id_json = json.dumps(status_id)
 
     lineas = []
     lineas.append("(async function () {")
+    lineas.append("  const statusId = " + status_id_json + ";")
+    lineas.append("  const statusEl = document.getElementById(statusId);")
+    lineas.append("  function show(message, data) {")
+    lineas.append("    if (!statusEl) return;")
+    lineas.append("    let text = '[AutoMindCloud] ' + message;")
+    lineas.append("    if (data !== undefined) {")
+    lineas.append("      try {")
+    lineas.append("        text += '\\n' + JSON.stringify(data, null, 2);")
+    lineas.append("      } catch (_) {")
+    lineas.append("        text += '\\n' + String(data);")
+    lineas.append("      }")
+    lineas.append("    }")
+    lineas.append("    statusEl.textContent = text;")
+    lineas.append("  }")
     lineas.append("  try {")
+    lineas.append("    show('Iniciando envio...');")
     lineas.append("    const autoMindInfo = " + auto_mind_json + ";")
     lineas.append("    const owner = " + owner_json + ";")
     lineas.append("    const repo = " + repo_json + ";")
@@ -72,7 +88,11 @@ def _crear_script(auto_mind_info):
     lineas.append("    params.set('path', modulePath);")
     lineas.append("    params.set('per_page', '1');")
     lineas.append("    const githubApiUrl = 'https://api.github.com/repos/' + owner + '/' + repo + '/commits?' + params.toString();")
-    lineas.append("    const commitResponse = await fetch(githubApiUrl, { cache: 'no-store' });")
+    lineas.append("    show('Consultando ultimo commit...', { githubApiUrl });")
+    lineas.append("    const commitResponse = await fetch(githubApiUrl, {")
+    lineas.append("      cache: 'no-store',")
+    lineas.append("      headers: { Accept: 'application/vnd.github+json' }")
+    lineas.append("    });")
     lineas.append("    if (!commitResponse.ok) {")
     lineas.append("      throw new Error('GitHub commit lookup failed: ' + commitResponse.status);")
     lineas.append("    }")
@@ -83,14 +103,27 @@ def _crear_script(auto_mind_info):
     lineas.append("    }")
     lineas.append("    const moduleUrl = 'https://cdn.jsdelivr.net/gh/' + owner + '/' + repo + '@' + latestSha + '/' + modulePath;")
     lineas.append("    window.__AutoMindCloud_lastModuleUrl = moduleUrl;")
+    lineas.append("    show('Cargando modulo desde jsDelivr...', { latestSha, moduleUrl });")
     lineas.append("    const modulo = await import(moduleUrl);")
     lineas.append("    if (!modulo || typeof modulo.enviarAutoMindFirestore !== 'function') {")
     lineas.append("      throw new Error('No existe enviarAutoMindFirestore en el modulo cargado.');")
     lineas.append("    }")
+    lineas.append("    show('Modulo cargado. Enviando a Firestore...', { latestSha, moduleUrl });")
     lineas.append("    const resultado = await modulo.enviarAutoMindFirestore(autoMindInfo);")
     lineas.append("    window.__AutoMindCloud_lastResult = resultado;")
+    lineas.append("    if (!resultado || resultado.ok !== true) {")
+    lineas.append("      throw new Error('Firestore respondio error: ' + JSON.stringify(resultado));")
+    lineas.append("    }")
+    lineas.append("    show('Guardado correctamente.', resultado);")
     lineas.append("  } catch (error) {")
-    lineas.append("    window.__AutoMindCloud_lastError = error;")
+    lineas.append("    const errorInfo = {")
+    lineas.append("      name: error && error.name,")
+    lineas.append("      code: error && error.code,")
+    lineas.append("      message: error && error.message,")
+    lineas.append("      moduleUrl: window.__AutoMindCloud_lastModuleUrl || null")
+    lineas.append("    };")
+    lineas.append("    window.__AutoMindCloud_lastError = errorInfo;")
+    lineas.append("    show('ERROR', errorInfo);")
     lineas.append("    console.error('[AutoMindCloud] Error durante envio:', error);")
     lineas.append("  }")
     lineas.append("})();")
@@ -104,10 +137,20 @@ def reenviar_automind_firestore():
         from IPython.display import display
 
         auto_mind_info = _obtener_automind_info()
-        script = _crear_script(auto_mind_info)
         instance_id = "automind_sender_" + uuid.uuid4().hex
+        status_id = instance_id + "_status"
+        script = _crear_script(auto_mind_info, status_id)
 
-        html = '<div id="' + instance_id + '" style="display:none"></div>'
+        html = '<pre id="' + status_id + '" style="'
+        html += "white-space:pre-wrap;"
+        html += "font:12px/1.45 monospace;"
+        html += "background:#111827;"
+        html += "color:#d1fae5;"
+        html += "border:1px solid #374151;"
+        html += "border-radius:6px;"
+        html += "padding:10px;"
+        html += "margin:8px 0;"
+        html += '">[AutoMindCloud] Preparando envio...</pre>'
         html += "<script>"
         html += script
         html += "</script>"
@@ -115,7 +158,16 @@ def reenviar_automind_firestore():
         display(HTML(html))
         return True
 
-    except Exception:
+    except Exception as error:
+        try:
+            from IPython.display import HTML
+            from IPython.display import display
+
+            mensaje = json.dumps(str(error))
+            display(HTML("<pre>[AutoMindCloud] Error Python: " + mensaje + "</pre>"))
+        except Exception:
+            pass
+
         return False
 
 
