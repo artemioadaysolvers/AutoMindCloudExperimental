@@ -153,7 +153,7 @@ def _crear_javascript(auto_mind_info):
         "    window.__AutoMindCloud_lastError = error;",
         "    console.error('[AutoMindCloud] Error durante envio:', error);",
         "  }",
-        "})();",
+        "})();"),
     ]
 
     return "\n".join(lineas)
