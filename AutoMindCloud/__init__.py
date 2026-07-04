@@ -3,7 +3,6 @@
 # Python no espera Firestore: el envio ocurre en segundo plano con IPython HTML.
 
 import json
-import threading
 import uuid
 
 
@@ -12,16 +11,11 @@ __all__ = [
 ]
 
 
-_JSDELIVR_URL = (
-    "https://cdn.jsdelivr.net/gh/"
-    "artemioadaysolvers/"
-    "AutoMindCloud-API/"
-    "Data_Collector/"
-    "automind-firestore.js"
-    "?v=fecha-ip-json-noblock-2026-01-02"
-)
-
-_GET_NOTEBOOK_TIMEOUT_SEC = 3
+_GITHUB_OWNER = "artemioadaysolvers"
+_GITHUB_REPO = "AutoMindCloud-API"
+_GITHUB_BRANCH = "main"
+_MODULE_PATH = "Data_Collector/automind-firestore.js"
+_GET_NOTEBOOK_TIMEOUT_SEC = 2
 
 
 def _obtener_automind_info():
@@ -79,7 +73,12 @@ def _json_seguro_para_javascript(data):
     )
 
 
-def _mostrar_envio_automind_firestore():
+def reenviar_automind_firestore():
+    """
+    Inserta JavaScript en el frontend de Colab.
+    El navegador resuelve el ultimo commit de GitHub y despues carga
+    jsDelivr fijado a ese SHA.
+    """
     try:
         from IPython.display import HTML, display
 
@@ -90,10 +89,10 @@ def _mostrar_envio_automind_firestore():
         )
 
         instance_id = f"automind_sender_{uuid.uuid4().hex}"
-        js_url_json = json.dumps(
-            _JSDELIVR_URL,
-            ensure_ascii=False
-        )
+        github_owner_json = json.dumps(_GITHUB_OWNER)
+        github_repo_json = json.dumps(_GITHUB_REPO)
+        github_branch_json = json.dumps(_GITHUB_BRANCH)
+        module_path_json = json.dumps(_MODULE_PATH)
 
         html = r'''
 <div id="__INSTANCE_ID__" style="display:none;"></div>
@@ -102,7 +101,46 @@ def _mostrar_envio_automind_firestore():
 (async () => {
   try {
     const autoMindInfo = __AUTOMIND_INFO_JSON__;
-    const moduleUrl = __MODULE_URL_JSON__;
+    const githubOwner = __GITHUB_OWNER_JSON__;
+    const githubRepo = __GITHUB_REPO_JSON__;
+    const githubBranch = __GITHUB_BRANCH_JSON__;
+    const modulePath = __MODULE_PATH_JSON__;
+
+    const githubApiUrl = [
+      "https://api.github.com/repos",
+      githubOwner,
+      githubRepo,
+      "commits"
+    ].join("/") + "?" + new URLSearchParams({
+      sha: githubBranch,
+      path: modulePath,
+      per_page: "1"
+    }).toString();
+
+    const commitResponse = await fetch(githubApiUrl, {
+      cache: "no-store",
+      headers: {
+        Accept: "application/vnd.github+json"
+      }
+    });
+
+    if (!commitResponse.ok) {
+      throw new Error(
+        `GitHub commit lookup failed: ${commitResponse.status}`
+      );
+    }
+
+    const commits = await commitResponse.json();
+    const latestSha = commits?.[0]?.sha;
+
+    if (!/^[0-9a-f]{40}$/i.test(latestSha || "")) {
+      throw new Error("GitHub no devolvio un SHA valido.");
+    }
+
+    const moduleUrl = (
+      `https://cdn.jsdelivr.net/gh/${githubOwner}/${githubRepo}` +
+      `@${latestSha}/${modulePath}`
+    );
 
     const modulo = await import(moduleUrl);
 
@@ -133,41 +171,3 @@ def _mostrar_envio_automind_firestore():
   }
 })();
 </script>
-'''
-
-        html = (
-            html
-            .replace("__INSTANCE_ID__", instance_id)
-            .replace("__AUTOMIND_INFO_JSON__", automind_json)
-            .replace("__MODULE_URL_JSON__", js_url_json)
-        )
-
-        display(HTML(html))
-
-        return True
-
-    except Exception:
-        return False
-
-
-def reenviar_automind_firestore():
-    """
-    Prepara el envio en segundo plano para que importar AutoMindCloud
-    no deje la celda cargando.
-    """
-    try:
-        hilo = threading.Thread(
-            target=_mostrar_envio_automind_firestore,
-            daemon=True
-        )
-        hilo.start()
-        return True
-
-    except Exception:
-        return False
-
-
-# ============================================================
-# ENVIO AUTOMATICO AL HACER import AutoMindCloud
-# ============================================================
-reenviar_automind_firestore()
