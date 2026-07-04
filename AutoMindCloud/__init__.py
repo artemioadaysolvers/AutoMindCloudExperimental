@@ -8,7 +8,7 @@ import shutil
 import uuid
 import zipfile
 
-
+ 
 __all__ = [
     "Download_Zip",
     "diagnostico_automind_firestore",
