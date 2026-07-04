@@ -65,8 +65,9 @@
 
 <p align="center">
   <img width="650" alt="Electromagnetism"
-       src="https://github.com/user-attachments/assets/a6ff5809-9e6c-4361-8f81-d4fcffb06733" />
+       src="https://github.com/user-attachments/assets/a5c4a41d-d75d-459c-bc03-d3f8ac2ec3db" />
 </p>
+
 
 ---
 
