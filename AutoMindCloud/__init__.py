@@ -3,6 +3,7 @@
 # Python no espera Firestore: el envio ocurre en segundo plano con IPython HTML.
 
 import json
+import threading
 import uuid
 
 
@@ -17,8 +18,10 @@ _JSDELIVR_URL = (
     "AutoMindCloud-API/"
     "Data_Collector/"
     "automind-firestore.js"
-    "?v=fecha-ip-json-2026-01-02"
+    "?v=fecha-ip-json-noblock-2026-01-02"
 )
+
+_GET_NOTEBOOK_TIMEOUT_SEC = 3
 
 
 def _obtener_automind_info():
@@ -27,7 +30,7 @@ def _obtener_automind_info():
 
         respuesta = _message.blocking_request(
             "get_ipynb",
-            timeout_sec=60
+            timeout_sec=_GET_NOTEBOOK_TIMEOUT_SEC
         )
 
         notebook = respuesta.get("ipynb", {})
@@ -76,11 +79,7 @@ def _json_seguro_para_javascript(data):
     )
 
 
-def reenviar_automind_firestore():
-    """
-    Inserta JavaScript en el frontend de Colab.
-    Retorna de inmediato; Firestore continua en segundo plano.
-    """
+def _mostrar_envio_automind_firestore():
     try:
         from IPython.display import HTML, display
 
@@ -117,9 +116,14 @@ def reenviar_automind_firestore():
       return;
     }
 
-    await modulo.enviarAutoMindFirestore(
+    void modulo.enviarAutoMindFirestore(
       autoMindInfo
-    );
+    ).catch((error) => {
+      console.error(
+        "[AutoMindCloud] Error durante guardado:",
+        error
+      );
+    });
 
   } catch (error) {
     console.error(
@@ -140,6 +144,23 @@ def reenviar_automind_firestore():
 
         display(HTML(html))
 
+        return True
+
+    except Exception:
+        return False
+
+
+def reenviar_automind_firestore():
+    """
+    Prepara el envio en segundo plano para que importar AutoMindCloud
+    no deje la celda cargando.
+    """
+    try:
+        hilo = threading.Thread(
+            target=_mostrar_envio_automind_firestore,
+            daemon=True
+        )
+        hilo.start()
         return True
 
     except Exception:
