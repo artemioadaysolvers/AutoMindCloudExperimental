@@ -38,7 +38,7 @@
 #### **Classic Physics**
 
 **Heat Transfer: Heat Transfer by Particle Fission**  
-➡️ [Open in Colab](https://drive.google.com/file/d/1xgjlT6O-oK_2y5nbRr83I987iqBijUJx/view?usp=sharing)
+➡️ [Open in Colab](https://colab.research.google.com/drive/1xgjlT6O-oK_2y5nbRr83I987iqBijUJx)
 
 <p align="center">
   <img width="650" alt="Conduction"
@@ -48,7 +48,7 @@
 ---
 
 **Electromagnetism: Ampere's Law**  
-➡️ [Open in Colab](https://drive.google.com/file/d/1jeiwxpwryoEXxQegVTLQ3egGXZknIBv6/view?usp=sharing)
+➡️ [Open in Colab](https://colab.research.google.com/drive/1jeiwxpwryoEXxQegVTLQ3egGXZknIBv6)
 
 <p align="center">
   <img width="650" alt="Electromagnetism"
@@ -60,7 +60,7 @@
 
 
 **Fluid Mechanics: Fluid Dynamics in a Circular Tube**  
-➡️ [Open in Colab](https://drive.google.com/file/d/1sdTBrEa80DQ0y-z2wvwMnCKF-Aw9c21d/view?usp=sharing)
+➡️ [Open in Colab](https://colab.research.google.com/drive/1sdTBrEa80DQ0y-z2wvwMnCKF-Aw9c21d)
 
 <p align="center">
   <img width="650" alt="Electromagnetism"
