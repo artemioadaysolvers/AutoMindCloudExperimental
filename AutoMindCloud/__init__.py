@@ -20,11 +20,10 @@ if response.status_code == 200:
     with open(local_filename, "wb") as f:
         f.write(response.content)
 
-
-
 import os 
 import shutil
 import zipfile
+
 
 def Download_Zip(Drive_Link, Output_Name="USDModel"):
     """Descarga un ZIP de Google Drive, lo descomprime y devuelve /content/Output_Name."""
@@ -60,9 +59,6 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
 
     shutil.rmtree(tmp_extract, ignore_errors=True)
     return final_dir
-
-
-
 
 
 
