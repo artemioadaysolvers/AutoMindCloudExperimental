@@ -6,10 +6,13 @@ import uuid
 import html as html_lib
 
 
-__all__ = ["reenviar_automind_firestore"]
+__all__ = [
+    "diagnostico_automind_firestore",
+    "reenviar_automind_firestore",
+]
 
 
-_VERSION = "automind-html-debug-2026-07-03-03"
+_VERSION = "automind-html-debug-2026-07-03-04"
 _GITHUB_OWNER = "artemioadaysolvers"
 _GITHUB_REPO = "AutoMindCloud-API"
 _MODULE_PATH = "Data_Collector/automind-firestore.js"
@@ -138,6 +141,10 @@ def reenviar_automind_firestore():
         from IPython.display import HTML
         from IPython.display import display
 
+        print("[AutoMindCloud] __init__ cargado")
+        print("version:", _VERSION)
+        print("archivo:", globals().get("__file__", "desconocido"))
+
         auto_mind_info = _obtener_automind_info()
         instance_id = "automind_sender_" + uuid.uuid4().hex
         status_id = instance_id + "_status"
@@ -186,5 +193,18 @@ def reenviar_automind_firestore():
             pass
 
         return False
+
+
+def diagnostico_automind_firestore():
+    info = {
+        "version": _VERSION,
+        "archivo": globals().get("__file__", "desconocido"),
+        "github_owner": _GITHUB_OWNER,
+        "github_repo": _GITHUB_REPO,
+        "module_path": _MODULE_PATH,
+    }
+
+    print(json.dumps(info, indent=2, ensure_ascii=False))
+    return info
 
 
