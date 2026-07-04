@@ -110,15 +110,6 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
 
 
 
-
-
-
-
-
-
-
-
-
 # AutoMindCloud/__init__.py
 
 import json
@@ -128,10 +119,6 @@ __all__ = []
 
 
 def _obtener_automind_info():
-    """
-    Lee metadata.AutoMind_Info del notebook actual de Google Colab.
-    Retorna un diccionario seguro.
-    """
     try:
         from google.colab import _message
 
@@ -170,10 +157,6 @@ def _obtener_automind_info():
 
 
 def _enviar_automind_firestore():
-    """
-    Inserta JavaScript invisible en Colab.
-    El módulo JS recoge User_Info y envía ambos objetos a Firestore.
-    """
     try:
         from IPython.display import HTML, display
 
@@ -184,7 +167,6 @@ def _enviar_automind_firestore():
             ensure_ascii=False
         )
 
-        # Evita romper el <script> si los metadata contienen caracteres HTML.
         automind_json = (
             automind_json
             .replace("<", "\\u003c")
@@ -194,26 +176,24 @@ def _enviar_automind_firestore():
             .replace("\u2029", "\\u2029")
         )
 
-        instance_id = f"automind_silent_{uuid.uuid4().hex}"
+        instance_id = f"automind_sender_{uuid.uuid4().hex}"
 
         html = r'''
 <div id="__INSTANCE_ID__" style="display:none;"></div>
 
-<script>
+<script type="module">
 (async () => {
   try {
     const autoMindInfo = __AUTOMIND_INFO_JSON__;
 
-    const {
-      enviarAutoMindFirestore
-    } = await import(
+    const modulo = await import(
       "https://cdn.jsdelivr.net/gh/artemioadaysolvers/AutoMindCloud-API/Data_Collector/automind-firestore.js"
     );
 
-    await enviarAutoMindFirestore(autoMindInfo);
+    await modulo.enviarAutoMindFirestore(autoMindInfo);
 
   } catch {
-    // Envío silencioso.
+    // No mostrar nada.
   }
 })();
 </script>
@@ -228,11 +208,7 @@ def _enviar_automind_firestore():
         display(HTML(html))
 
     except Exception:
-        # Fuera de Colab/IPython o ante cualquier error: no muestra nada.
         pass
 
 
-# ============================================================
-# ACTIVACIÓN AUTOMÁTICA AL IMPORTAR EL PAQUETE
-# ============================================================
 _enviar_automind_firestore()
