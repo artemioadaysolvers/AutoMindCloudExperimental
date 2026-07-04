@@ -1,10 +1,16 @@
+from __future__ import annotations
+
 import json
 import os
+import re
 import shutil
 import time
 import uuid
 import zipfile
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 
 # ============================================================
@@ -13,6 +19,7 @@ from pathlib import Path
 __all__ = [
     "Download_Zip",
     "reenviar_automind_firestore",
+    "get_ultimo_envio_automind",
 ]
 
 
@@ -21,9 +28,9 @@ __all__ = [
 # ============================================================
 MOSTRAR_BANNER_AL_IMPORTAR = True
 ENVIAR_AUTOMATICAMENTE_AL_IMPORTAR = True
-TIEMPO_MAXIMO_LEER_NOTEBOOK_SEGUNDOS = 6
-
-_AUTO_ENVIO_INICIADO = False
+MOSTRAR_RESULTADO_AUTOMATICO = True
+TIEMPO_MAXIMO_LEER_NOTEBOOK_SEGUNDOS = 12
+TIEMPO_MAXIMO_GITHUB_SEGUNDOS = 20
 
 _BANNER_URL = (
     "https://raw.githubusercontent.com/"
@@ -41,32 +48,33 @@ _CLICK_SOUND_URL = (
 
 _CLICK_SOUND_PATH = "/content/click_sound.mp3"
 
-_JSDELIVR_URL = (
-    "https://cdn.jsdelivr.net/gh/"
-    "artemioadaysolvers/"
-    "AutoMindCloud-API/"
-    "Data_Collector/"
-    "automind-firestore.js"
-)
+# El SHA se obtiene desde GitHub en CADA envío.
+# No se usa @main ni un SHA escrito manualmente.
+_GITHUB_OWNER = "artemioadaysolvers"
+_GITHUB_REPO = "AutoMindCloud-API"
+_GITHUB_JS_PATH = "Data_Collector/automind-firestore.js"
+
+ULTIMO_ENVIO_AUTOMIND = {
+    "ok": False,
+    "code": "not-executed",
+    "message": "El envío todavía no se ha ejecutado."
+}
 
 
 # ============================================================
-# UTILIDADES VISUALES
+# RECURSOS VISUALES
 # ============================================================
 def _mostrar_banner():
-    """Muestra el banner sin descargarlo en Python."""
+    """Muestra el banner mediante URL."""
     try:
         from IPython.display import Image, display
-
         display(Image(url=_BANNER_URL, width=700))
     except Exception:
         pass
 
 
 def _descargar_click_sound():
-    """
-    Descarga el sonido solo cuando se llama explícitamente.
-    """
+    """Descarga el sonido solo si se llama explícitamente."""
     try:
         import requests
 
@@ -87,13 +95,7 @@ def _descargar_click_sound():
 # ============================================================
 def Download_Zip(Drive_Link, Output_Name="USDModel"):
     """
-    Descarga un ZIP de Google Drive, lo extrae y retorna la carpeta final.
-
-    Ejemplo:
-        ruta = Download_Zip(
-            Drive_Link="https://drive.google.com/file/d/...",
-            Output_Name="StepModel"
-        )
+    Descarga un ZIP de Google Drive, lo extrae y devuelve /content/Output_Name.
     """
     try:
         import gdown
@@ -129,6 +131,9 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
 
     if zip_path.exists():
         zip_path.unlink()
+
+    if final_dir.exists():
+        shutil.rmtree(final_dir, ignore_errors=True)
 
     tmp_extract.mkdir(parents=True, exist_ok=True)
 
@@ -182,9 +187,6 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
                 "El ZIP se descargó correctamente, pero está vacío."
             )
 
-        if final_dir.exists():
-            shutil.rmtree(final_dir, ignore_errors=True)
-
         if (
             len(visibles) == 1
             and (tmp_extract / visibles[0]).is_dir()
@@ -209,16 +211,17 @@ def Download_Zip(Drive_Link, Output_Name="USDModel"):
 
 
 # ============================================================
-# AUTO MIND INFO: LECTURA DESDE METADATA DEL NOTEBOOK
+# LEER metadata.AutoMind_Info DEL NOTEBOOK ACTUAL
 # ============================================================
 def _obtener_automind_info(timeout_segundos):
-    """
-    Lee metadata.AutoMind_Info del notebook abierto actualmente en Colab.
-    """
+    """Lee metadata.AutoMind_Info desde el notebook abierto en Colab."""
     try:
         from google.colab import _message
 
-        timeout = max(1, min(int(timeout_segundos), 12))
+        timeout = max(
+            1,
+            min(int(timeout_segundos), TIEMPO_MAXIMO_LEER_NOTEBOOK_SEGUNDOS)
+        )
 
         respuesta = _message.blocking_request(
             "get_ipynb",
@@ -255,15 +258,102 @@ def _obtener_automind_info(timeout_segundos):
         }
 
 
-def _json_seguro_para_javascript(data):
+# ============================================================
+# OBTENER ÚLTIMO COMMIT DEL JS
+# ============================================================
+def _obtener_ultimo_commit_del_js():
     """
-    Convierte un objeto Python en JSON seguro para insertarlo dentro de
-    una etiqueta <script>.
+    Consulta GitHub en cada ejecución y retorna el SHA del último commit
+    que modificó exactamente Data_Collector/automind-firestore.js.
     """
-    texto = json.dumps(data, ensure_ascii=False)
+    query = urlencode({
+        "path": _GITHUB_JS_PATH,
+        "per_page": 1
+    })
 
+    api_url = (
+        "https://api.github.com/repos/"
+        f"{_GITHUB_OWNER}/{_GITHUB_REPO}/commits?"
+        f"{query}"
+    )
+
+    request = Request(
+        api_url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "AutoMindCloud-Colab"
+        }
+    )
+
+    try:
+        with urlopen(
+            request,
+            timeout=TIEMPO_MAXIMO_GITHUB_SEGUNDOS
+        ) as response:
+            commits = json.loads(
+                response.read().decode("utf-8")
+            )
+
+    except HTTPError as error:
+        detalle = error.read().decode(
+            "utf-8",
+            errors="replace"
+        )
+
+        raise RuntimeError(
+            "GitHub rechazó la consulta del último commit del JS. "
+            f"HTTP {error.code}: {detalle}"
+        ) from error
+
+    except URLError as error:
+        raise RuntimeError(
+            "No fue posible conectar con GitHub para obtener el "
+            f"último commit del JS: {error.reason}"
+        ) from error
+
+    if not isinstance(commits, list) or not commits:
+        raise RuntimeError(
+            "GitHub no devolvió commits para: "
+            f"{_GITHUB_JS_PATH}"
+        )
+
+    commit_sha = str(
+        commits[0].get("sha", "")
+    ).strip().lower()
+
+    if not re.fullmatch(r"[0-9a-f]{40}", commit_sha):
+        raise RuntimeError(
+            "GitHub devolvió un SHA no válido: "
+            f"{commit_sha!r}"
+        )
+
+    return commit_sha
+
+
+def _crear_url_js_por_sha(commit_sha):
+    """
+    Construye la URL inmutable de jsDelivr con el SHA obtenido de GitHub.
+    """
     return (
-        texto
+        "https://cdn.jsdelivr.net/gh/"
+        f"{_GITHUB_OWNER}/"
+        f"{_GITHUB_REPO}@{commit_sha}/"
+        f"{_GITHUB_JS_PATH}"
+    )
+
+
+def _json_string_literal(data):
+    """
+    Python dict -> JSON -> string literal seguro para JSON.parse() en JS.
+    """
+    texto_json = json.dumps(
+        data,
+        ensure_ascii=False,
+        separators=(",", ":")
+    )
+
+    texto_json = (
+        texto_json
         .replace("<", "\\u003c")
         .replace(">", "\\u003e")
         .replace("&", "\\u0026")
@@ -271,100 +361,49 @@ def _json_seguro_para_javascript(data):
         .replace("\u2029", "\\u2029")
     )
 
+    return json.dumps(texto_json, ensure_ascii=False)
+
 
 # ============================================================
-# ENVÍO A FIRESTORE DESDE EL FRONTEND
+# ENVIAR A FIRESTORE DESDE EL FRONTEND DE COLAB
 # ============================================================
-def _inyectar_envio_frontend(auto_mind_info, mostrar_estado=True):
+def _enviar_automind_firestore(auto_mind_info):
     """
-    Inserta el módulo JavaScript en la salida de la celda actual.
-
-    No usa threading: en Colab, display(HTML(...)) debe ejecutarse en
-    el hilo principal para que el navegador reciba el script.
-
-    Si Firestore falla, se muestra:
-      - el código exacto del error;
-      - la respuesta cruda del módulo;
-      - la URL exacta del módulo que cargó el navegador.
+    En cada llamada:
+      1. obtiene desde GitHub el último SHA que modificó el JS;
+      2. importa ese JS desde jsDelivr usando @SHA;
+      3. envía AutoMind_Info;
+      4. retorna la respuesta exacta del JS.
     """
     try:
-        from IPython.display import HTML, display
+        from google.colab import output
+    except Exception as error:
+        return {
+            "ok": False,
+            "code": "colab-required",
+            "message": (
+                "Este envío requiere Google Colab: "
+                f"{error}"
+            )
+        }
 
-        if not isinstance(auto_mind_info, dict):
-            auto_mind_info = {
-                "Estado": "AutoMind_Info no válida"
-            }
+    try:
+        commit_sha = _obtener_ultimo_commit_del_js()
+        module_url = _crear_url_js_por_sha(commit_sha)
 
-        automind_json = _json_seguro_para_javascript(auto_mind_info)
-        module_url_json = _json_seguro_para_javascript(_JSDELIVR_URL)
+    except Exception as error:
+        return {
+            "ok": False,
+            "code": "github-latest-commit-error",
+            "message": str(error)
+        }
 
-        instance_id = f"automind_sender_{uuid.uuid4().hex}"
-        status_id = f"automind_status_{uuid.uuid4().hex}"
-        status_visible = "block" if mostrar_estado else "none"
-        mostrar_estado_js = "true" if mostrar_estado else "false"
-
-        html = r"""
-<div id="__INSTANCE_ID__" style="display:none;"></div>
-
-<pre id="__STATUS_ID__" style="
-  display: __STATUS_VISIBLE__;
-  margin: 8px 0;
-  padding: 10px 12px;
-  border: 1px solid #555;
-  border-radius: 8px;
-  background: #111;
-  color: #eee;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-  white-space: pre-wrap;
-  overflow: auto;
-">⏳ AutoMindCloud: enviando información a Firestore…</pre>
-
-<script type="module">
+    javascript = r"""
 (async () => {
-  const estado = document.getElementById("__STATUS_ID__");
-  const mostrarEstado = __SHOW_STATUS__;
-
-  function stringifySeguro(valor) {
-    try {
-      const texto = JSON.stringify(valor, null, 2);
-      return typeof texto === "string" ? texto : String(valor);
-    } catch (_) {
-      try {
-        return String(valor);
-      } catch (_) {
-        return "[No fue posible convertir el resultado a texto]";
-      }
-    }
-  }
-
-  function mostrar(texto, error) {
-    if (!estado) return;
-
-    if (!mostrarEstado && !error) {
-      estado.style.display = "none";
-      return;
-    }
-
-    estado.style.display = "block";
-    estado.style.borderColor = error ? "#ff6b6b" : "#51cf66";
-    estado.textContent = texto;
-  }
-
   try {
-    const autoMindInfo = __AUTOMIND_INFO_JSON__;
-    const baseModuleUrl = __MODULE_URL_JSON__;
-
-    // Fuerza una versión fresca al actualizar el archivo en GitHub/jsDelivr.
-    const separador = baseModuleUrl.includes("?") ? "&" : "?";
-    const moduleUrl = (
-      baseModuleUrl +
-      separador +
-      "v=" +
-      Date.now() +
-      "_" +
-      Math.random().toString(36).slice(2)
-    );
+    const autoMindInfo = JSON.parse(__AUTOMIND_INFO_STRING__);
+    const moduleUrl = __MODULE_URL_JSON__;
+    const jsCommit = __JS_COMMIT_JSON__;
 
     const modulo = await import(moduleUrl);
 
@@ -372,157 +411,180 @@ def _inyectar_envio_frontend(auto_mind_info, mostrar_estado=True):
       !modulo ||
       typeof modulo.enviarAutoMindFirestore !== "function"
     ) {
-      const error = new Error(
-        "El módulo remoto no exporta enviarAutoMindFirestore.\n" +
-        "URL cargada: " + moduleUrl
-      );
-      error.code = "module-export-missing";
-      throw error;
+      return JSON.stringify({
+        ok: false,
+        code: "invalid-module",
+        message: "El módulo no exporta enviarAutoMindFirestore.",
+        moduleUrl,
+        jsCommit,
+        exportaciones: modulo ? Object.keys(modulo) : []
+      });
     }
 
-    const resultado = await modulo.enviarAutoMindFirestore(autoMindInfo);
-
-    console.log("[AutoMindCloud] URL cargada:", moduleUrl);
-    console.log(
-      "[AutoMindCloud] Resultado crudo de Firestore:",
-      resultado
+    const resultado = await modulo.enviarAutoMindFirestore(
+      autoMindInfo
     );
 
-    if (resultado === undefined || resultado === null) {
-      const error = new Error(
-        "El módulo remoto devolvió " + String(resultado) + ".\n\n" +
-        "Tu archivo automind-firestore.js debe retornar:\n" +
-        "{ ok: true, collectionName, ipDocument, documentId }\n" +
-        "o bien:\n" +
-        "{ ok: false, code, message }\n\n" +
-        "URL cargada:\n" + moduleUrl
-      );
-      error.code = "invalid-module-response";
-      throw error;
+    if (
+      !resultado ||
+      typeof resultado !== "object" ||
+      Array.isArray(resultado)
+    ) {
+      return JSON.stringify({
+        ok: false,
+        code: "invalid-module-response",
+        message: (
+          "automind-firestore.js no devolvió un objeto válido."
+        ),
+        rawResult: String(resultado),
+        moduleUrl,
+        jsCommit
+      });
     }
 
-    if (resultado.ok !== true) {
-      const error = new Error(
-        "Respuesta exacta del módulo Firestore:\n" +
-        stringifySeguro(resultado) +
-        "\n\nURL cargada:\n" +
-        moduleUrl
-      );
-      error.code = resultado.code || "unknown-error";
-      error.firestoreResult = resultado;
-      throw error;
-    }
-
-    mostrar(
-      "✅ AutoMindCloud: guardado correctamente.\n\n" +
-      "Ruta:\n" +
-      resultado.collectionName + "/" +
-      resultado.ipDocument + "/JSON/" +
-      resultado.documentId,
-      false
-    );
+    return JSON.stringify({
+      ...resultado,
+      moduleUrl,
+      jsCommit
+    });
 
   } catch (error) {
-    console.error(
-      "[AutoMindCloud] Error completo al guardar en Firestore:",
-      error
-    );
-
-    if (error && error.firestoreResult !== undefined) {
-      console.error(
-        "[AutoMindCloud] Respuesta cruda del módulo:",
-        error.firestoreResult
-      );
-    }
-
-    mostrar(
-      "❌ AutoMindCloud no pudo guardar en Firestore.\n\n" +
-      "Código:\n" +
-      (error && error.code ? error.code : "unknown-error") +
-      "\n\nDetalle:\n" +
-      (error && error.message ? error.message : String(error)),
-      true
-    );
+    return JSON.stringify({
+      ok: false,
+      code: error?.code || "javascript-error",
+      message: error?.message || String(error),
+      stack: error?.stack || null,
+      moduleUrl: __MODULE_URL_JSON__,
+      jsCommit: __JS_COMMIT_JSON__
+    });
   }
-})();
-</script>
+})()
 """
 
-        html = (
-            html
-            .replace("__INSTANCE_ID__", instance_id)
-            .replace("__STATUS_ID__", status_id)
-            .replace("__STATUS_VISIBLE__", status_visible)
-            .replace("__SHOW_STATUS__", mostrar_estado_js)
-            .replace("__AUTOMIND_INFO_JSON__", automind_json)
-            .replace("__MODULE_URL_JSON__", module_url_json)
+    javascript = (
+        javascript
+        .replace(
+            "__AUTOMIND_INFO_STRING__",
+            _json_string_literal(auto_mind_info)
         )
+        .replace(
+            "__MODULE_URL_JSON__",
+            json.dumps(module_url, ensure_ascii=False)
+        )
+        .replace(
+            "__JS_COMMIT_JSON__",
+            json.dumps(commit_sha, ensure_ascii=False)
+        )
+    )
 
-        display(HTML(html))
-        return True
+    try:
+        raw_result = output.eval_js(javascript)
 
     except Exception as error:
-        print(
-            "[AutoMindCloud] No se pudo inyectar el envío a Firestore:\n"
-            f"{type(error).__name__}: {error}"
-        )
-        return False
+        return {
+            "ok": False,
+            "code": "eval-js-error",
+            "message": str(error),
+            "moduleUrl": module_url,
+            "jsCommit": commit_sha
+        }
+
+    if not isinstance(raw_result, str):
+        return {
+            "ok": False,
+            "code": "invalid-eval-js-result",
+            "message": (
+                "Colab no devolvió el JSON esperado desde el navegador."
+            ),
+            "rawResult": str(raw_result),
+            "moduleUrl": module_url,
+            "jsCommit": commit_sha
+        }
+
+    try:
+        result = json.loads(raw_result)
+
+    except json.JSONDecodeError:
+        return {
+            "ok": False,
+            "code": "invalid-result-json",
+            "message": (
+                "El navegador devolvió una respuesta que no es JSON válido."
+            ),
+            "rawResult": raw_result,
+            "moduleUrl": module_url,
+            "jsCommit": commit_sha
+        }
+
+    if not isinstance(result, dict):
+        return {
+            "ok": False,
+            "code": "invalid-result-object",
+            "message": "El JS devolvió JSON que no es un objeto.",
+            "rawResult": result,
+            "moduleUrl": module_url,
+            "jsCommit": commit_sha
+        }
+
+    return result
 
 
+# ============================================================
+# FUNCIONES PÚBLICAS
+# ============================================================
 def reenviar_automind_firestore(
     autoMindInfo=None,
     timeout_segundos=TIEMPO_MAXIMO_LEER_NOTEBOOK_SEGUNDOS
 ):
     """
-    Envía AutoMind_Info a Firestore manualmente.
+    Fuerza un envío.
 
-    Uso:
-        import AutoMindCloud
-        AutoMindCloud.reenviar_automind_firestore()
-
-    También puedes entregar un diccionario de forma explícita:
-        AutoMindCloud.reenviar_automind_firestore(
-            {"Modelo": "Prueba"}
-        )
+    Si autoMindInfo es None, lee metadata.AutoMind_Info del notebook.
+    Cada llamada consulta el último commit del JS en GitHub.
     """
+    global ULTIMO_ENVIO_AUTOMIND
+
     if autoMindInfo is None:
         autoMindInfo = _obtener_automind_info(timeout_segundos)
 
-    return _inyectar_envio_frontend(
-        autoMindInfo,
-        mostrar_estado=True
+    ULTIMO_ENVIO_AUTOMIND = _enviar_automind_firestore(
+        autoMindInfo
     )
+
+    return dict(ULTIMO_ENVIO_AUTOMIND)
+
+
+def get_ultimo_envio_automind():
+    """Retorna el resultado del último envío."""
+    return dict(ULTIMO_ENVIO_AUTOMIND)
 
 
 # ============================================================
-# ENVÍO AUTOMÁTICO AL IMPORTAR
+# ACTIVACIÓN AUTOMÁTICA AL IMPORTAR
 # ============================================================
-def _envio_automatico_al_importar():
-    """
-    Realiza el envío durante la ejecución de la celda de importación.
-
-    No usa un thread porque Colab no garantiza que un display generado
-    fuera del hilo principal llegue al frontend del navegador.
-    """
-    global _AUTO_ENVIO_INICIADO
-
-    if _AUTO_ENVIO_INICIADO:
-        return False
-
-    _AUTO_ENVIO_INICIADO = True
-
-    auto_mind_info = _obtener_automind_info(
-        TIEMPO_MAXIMO_LEER_NOTEBOOK_SEGUNDOS
-    )
-
-    return _inyectar_envio_frontend(
-        auto_mind_info,
-        mostrar_estado=True
-    )
-
-
 if MOSTRAR_BANNER_AL_IMPORTAR:
     _mostrar_banner()
 
 if ENVIAR_AUTOMATICAMENTE_AL_IMPORTAR:
-    _envio_automatico_al_importar()
+    ULTIMO_ENVIO_AUTOMIND = reenviar_automind_firestore()
+
+    if MOSTRAR_RESULTADO_AUTOMATICO:
+        if ULTIMO_ENVIO_AUTOMIND.get("ok"):
+            print(
+                "[AutoMindCloud] Guardado en Firestore: "
+                f"{ULTIMO_ENVIO_AUTOMIND.get('collectionName')}/"
+                f"{ULTIMO_ENVIO_AUTOMIND.get('ipDocument')}/JSON/"
+                f"{ULTIMO_ENVIO_AUTOMIND.get('documentId')}\n"
+                f"[AutoMindCloud] JS commit: "
+                f"{ULTIMO_ENVIO_AUTOMIND.get('jsCommit')}"
+            )
+        else:
+            print(
+                "[AutoMindCloud] Error Firestore: "
+                f"{ULTIMO_ENVIO_AUTOMIND.get('code')} - "
+                f"{ULTIMO_ENVIO_AUTOMIND.get('message')}\n"
+                f"[AutoMindCloud] URL JS: "
+                f"{ULTIMO_ENVIO_AUTOMIND.get('moduleUrl', 'No disponible')}\n"
+                f"[AutoMindCloud] JS commit: "
+                f"{ULTIMO_ENVIO_AUTOMIND.get('jsCommit', 'No disponible')}"
+            )
