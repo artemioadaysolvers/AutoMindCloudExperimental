@@ -8,14 +8,15 @@ import shutil
 import uuid
 import zipfile
 
-
+ 
 __all__ = [
     "Download_Zip",
+    "diagnostico_automind_firestore",
     "reenviar_automind_firestore",
 ]
 
 
-_VERSION = "automindcloud-init-hidden-2026-07-04-01"
+_VERSION = "automindcloud-init-commit-lookup-2026-07-03-02"
 
 _LOGO_URL = (
     "https://raw.githubusercontent.com/"
@@ -33,6 +34,7 @@ _JS_GITHUB_OWNER = "artemioadaysolvers"
 _JS_GITHUB_REPO = "AutoMindCloud-API"
 _JS_MODULE_PATH = "Data_Collector/automind-firestore.js"
 _GET_NOTEBOOK_TIMEOUT_SEC = 2
+_SHOW_AUTOMIND_STATUS = True
 
 
 def _mostrar_logo():
@@ -162,6 +164,20 @@ def _crear_script_automind(auto_mind_info, status_id):
 
     lineas = []
     lineas.append("(async function () {")
+    lineas.append("  const statusId = " + status_id_json + ";")
+    lineas.append("  const statusEl = document.getElementById(statusId);")
+    lineas.append("  function show(message, data) {")
+    lineas.append("    if (!statusEl) return;")
+    lineas.append("    let text = '[AutoMindCloud] ' + message;")
+    lineas.append("    if (data !== undefined) {")
+    lineas.append("      try {")
+    lineas.append("        text += '\\n' + JSON.stringify(data, null, 2);")
+    lineas.append("      } catch (_) {")
+    lineas.append("        text += '\\n' + String(data);")
+    lineas.append("      }")
+    lineas.append("    }")
+    lineas.append("    statusEl.textContent = text;")
+    lineas.append("  }")
     lineas.append("  try {")
     lineas.append("    const autoMindInfo = " + auto_mind_json + ";")
     lineas.append("    const owner = " + owner_json + ";")
@@ -179,6 +195,8 @@ def _crear_script_automind(auto_mind_info, status_id):
     lineas.append("      '/commits?' +")
     lineas.append("      params.toString();")
     lineas.append("")
+    lineas.append("    window.__AutoMindCloud_commitUrl = githubCommitUrl;")
+    lineas.append("    show('Consultando commit real en GitHub...', { githubCommitUrl });")
     lineas.append("")
     lineas.append("    const commitResponse = await fetch(githubCommitUrl, {")
     lineas.append("      cache: 'no-store',")
@@ -207,6 +225,13 @@ def _crear_script_automind(auto_mind_info, status_id):
     lineas.append("      latestSha + '/' +")
     lineas.append("      modulePath;")
     lineas.append("")
+    lineas.append("    window.__AutoMindCloud_latestSha = latestSha;")
+    lineas.append("    window.__AutoMindCloud_lastModuleUrl = moduleUrl;")
+    lineas.append("    show('Commit encontrado. Cargando jsDelivr con SHA...', {")
+    lineas.append("      latestSha,")
+    lineas.append("      moduleUrl,")
+    lineas.append("      commitMessage: latestCommit.commit && latestCommit.commit.message")
+    lineas.append("    });")
     lineas.append("")
     lineas.append("    const modulo = await import(moduleUrl);")
     lineas.append("")
@@ -214,13 +239,27 @@ def _crear_script_automind(auto_mind_info, status_id):
     lineas.append("      throw new Error('No existe enviarAutoMindFirestore en el modulo cargado.');")
     lineas.append("    }")
     lineas.append("")
+    lineas.append("    show('Modulo cargado. Enviando a Firestore...', { latestSha, moduleUrl });")
     lineas.append("    const resultado = await modulo.enviarAutoMindFirestore(autoMindInfo);")
+    lineas.append("    window.__AutoMindCloud_lastResult = resultado;")
     lineas.append("")
     lineas.append("    if (!resultado || resultado.ok !== true) {")
     lineas.append("      throw new Error('Firestore respondio error: ' + JSON.stringify(resultado));")
     lineas.append("    }")
     lineas.append("")
-    lineas.append("  } catch (_) {")
+    lineas.append("    show('Guardado correctamente en Firestore.', resultado);")
+    lineas.append("  } catch (error) {")
+    lineas.append("    const errorInfo = {")
+    lineas.append("      name: error && error.name,")
+    lineas.append("      code: error && error.code,")
+    lineas.append("      message: error && error.message,")
+    lineas.append("      commitUrl: window.__AutoMindCloud_commitUrl || null,")
+    lineas.append("      latestSha: window.__AutoMindCloud_latestSha || null,")
+    lineas.append("      moduleUrl: window.__AutoMindCloud_lastModuleUrl || null")
+    lineas.append("    };")
+    lineas.append("    window.__AutoMindCloud_lastError = errorInfo;")
+    lineas.append("    show('ERROR', errorInfo);")
+    lineas.append("    console.error('[AutoMindCloud] Error durante envio:', error);")
     lineas.append("  }")
     lineas.append("})();")
 
@@ -237,17 +276,58 @@ def reenviar_automind_firestore():
         status_id = instance_id + "_status"
         script = _crear_script_automind(auto_mind_info, status_id)
 
-        html = "<script>"
+        html = ""
+
+        if _SHOW_AUTOMIND_STATUS:
+            html += '<pre id="' + status_id + '" style="'
+            html += "white-space:pre-wrap;"
+            html += "font:12px/1.45 monospace;"
+            html += "background:#111827;"
+            html += "color:#d1fae5;"
+            html += "border:1px solid #374151;"
+            html += "border-radius:6px;"
+            html += "padding:10px;"
+            html += "margin:8px 0;"
+            html += '">[AutoMindCloud] Preparando envio...</pre>'
+        else:
+            html += '<div id="' + status_id + '" style="display:none"></div>'
+
+        html += "<script>"
         html += script
         html += "</script>"
 
         display(HTML(html))
         return True
 
-    except Exception:
+    except Exception as error:
+        try:
+            from IPython.display import HTML
+            from IPython.display import display
+
+            mensaje = json.dumps(str(error))
+            display(HTML("<pre>[AutoMindCloud] Error Python: " + mensaje + "</pre>"))
+        except Exception:
+            pass
+
         return False
 
 
-_descargar_click_sound()
+def diagnostico_automind_firestore():
+    info = {
+        "version": _VERSION,
+        "archivo": globals().get("__file__", "desconocido"),
+        "github_owner_js": _JS_GITHUB_OWNER,
+        "github_repo_js": _JS_GITHUB_REPO,
+        "module_path_js": _JS_MODULE_PATH,
+        "consulta_commit_dentro_del_codigo": True,
+        "usa_jsdelivr_con_sha": True,
+        "usa_main_en_jsdelivr": False,
+    }
+
+    print(json.dumps(info, indent=2, ensure_ascii=False))
+    return info
+
+
 _mostrar_logo()
+_descargar_click_sound()
 reenviar_automind_firestore()
