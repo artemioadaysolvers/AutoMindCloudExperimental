@@ -13,6 +13,9 @@
 #   7) Hornea los mapas map_Kd a colores por vértice mediante UV para el viewport.
 #      Evita el bug de Colab donde CanvasTexture funciona en thumbnails, pero se
 #      vuelve negra solo en el framebuffer visible.
+#   8) En modo remoto, el HTML embebido consulta el último commit de GitHub al
+#      cargarse y construye una URL jsDelivr fijada al SHA nuevo. De esta forma,
+#      el output guardado puede usar la versión más reciente sin reejecutar Python.
 #
 # Uso típico en Google Colab:
 #   from MJCF_Render_Script import MJCF_Render, MJCF_Visualization
@@ -1078,7 +1081,7 @@ def MJCF_Visualization(
     hide_collision_geoms: bool = True,
     placeholder_missing_textures: bool = True,
     viewer_zip: str | None = None,
-    viewer_source: str = "auto",
+    viewer_source: str = "remote",
     force_visible_materials: bool = True,
     force_direct_mtl_maps: bool = True,
     viewport_texture_proxy: bool = True,
@@ -1100,9 +1103,10 @@ def MJCF_Visualization(
     class="collision". El archivo dentro del ZIP no se cambia: esta medida solo
     evita que una malla física negra tape exactamente a su copia visual.
 
-    viewer_zip permite ejecutar el ZIP local entregado junto con este script.
-    En modo viewer_source="auto" se usa el ZIP local cuando está disponible;
-    así ninguna corrección queda ignorada por la versión antigua de GitHub.
+    viewer_source="remote" (valor por defecto) deja el HTML autocargable: al
+    abrirse consulta el SHA más reciente de GitHub y carga ese commit por jsDelivr.
+    viewer_source="local" ejecuta un ZIP local; viewer_source="auto" lo prefiere
+    cuando existe y, en caso contrario, usa la actualización remota dinámica.
 
     viewport_texture_proxy=True activa una capa visual para el canvas principal.
     vertex_color_texture_bake=True (recomendado) convierte cada mapa decodificado
@@ -1160,9 +1164,17 @@ def MJCF_Visualization(
                 )
             viewer_url, commit = _local_viewer_data_url(local_candidates[0], compFile)
         else:
-            commit = _resolve_latest_commit(repo=repo, branch=branch, timeout=timeout)
-            viewer_url = _build_jsdelivr_url(commit["repo"], commit["sha"], compFile)
-            _probe_modular_viewer_entry(viewer_url, component_file=compFile, timeout=timeout)
+            # No se fija el SHA desde Python. El HTML guardado resolverá el último
+            # commit directamente desde el navegador cada vez que vuelva a cargar.
+            viewer_url = ""
+            commit = {
+                "repo": repo,
+                "branch": branch,
+                "sha": "",
+                "short_sha": "latest",
+                "message": "Resolución dinámica desde el HTML embebido",
+                "html_url": f"https://github.com/{repo}/tree/{branch}",
+            }
     except Exception as error:
         return _html_error("Error cargando el sistema modular AutoMind MJCF", str(error))
 
@@ -1193,6 +1205,9 @@ def MJCF_Visualization(
     commit_sha_js = json.dumps(commit["sha"])
     commit_short_js = json.dumps(commit["short_sha"])
     commit_url_js = json.dumps(commit["html_url"])
+    repo_js = json.dumps(repo)
+    branch_js = json.dumps(branch)
+    dynamic_remote_js = "false" if use_local else "true"
     comp_file_js = json.dumps(compFile)
     missing_textures_js = json.dumps(missing_textures, ensure_ascii=False)
     import_report_js = json.dumps(
@@ -1248,11 +1263,15 @@ def MJCF_Visualization(
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
 
   <script type="module">
-    const VIEWER_ENTRY_URL = {viewer_url_js};
-    const VIEWER_COMMIT_SHA = {commit_sha_js};
-    const VIEWER_COMMIT_SHORT_SHA = {commit_short_js};
-    const VIEWER_COMMIT_URL = {commit_url_js};
+    const VIEWER_REPO = {repo_js};
+    const VIEWER_BRANCH = {branch_js};
+    const VIEWER_DYNAMIC_REMOTE = {dynamic_remote_js};
     const VIEWER_COMP_FILE = {comp_file_js};
+
+    let VIEWER_ENTRY_URL = {viewer_url_js};
+    let VIEWER_COMMIT_SHA = {commit_sha_js};
+    let VIEWER_COMMIT_SHORT_SHA = {commit_short_js};
+    let VIEWER_COMMIT_URL = {commit_url_js};
     const MISSING_TEXTURES = {missing_textures_js};
     const MTL_IMPORT_REPORT = {import_report_js};
     const COLLISION_FILTER_REPORT = {collision_report_js};
@@ -1334,12 +1353,77 @@ def MJCF_Visualization(
     window.addEventListener('resize', () => {{ applyViewportHeight(); setColabFrameHeight(); }});
     window.visualViewport?.addEventListener('resize', () => {{ applyViewportHeight(); setColabFrameHeight(); }});
 
-    async function importCdnModule(entryUrl) {{
+    async function resolveLatestRemoteViewer() {{
+      if (!VIEWER_DYNAMIC_REMOTE) {{
+        return {{
+          sha: VIEWER_COMMIT_SHA,
+          shortSha: VIEWER_COMMIT_SHORT_SHA,
+          entryUrl: VIEWER_ENTRY_URL,
+          commitUrl: VIEWER_COMMIT_URL
+        }};
+      }}
+
+      const repositoryParts = String(VIEWER_REPO).split('/');
+      if (repositoryParts.length !== 2 || !repositoryParts[0] || !repositoryParts[1]) {{
+        throw new Error(
+          'Repositorio inválido: ' + VIEWER_REPO +
+          '. Se esperaba usuario/repositorio.'
+        );
+      }}
+
+      const owner = repositoryParts[0];
+      const repository = repositoryParts[1];
+      const apiUrl =
+        'https://api.github.com/repos/' +
+        encodeURIComponent(owner) + '/' +
+        encodeURIComponent(repository) + '/commits/' +
+        encodeURIComponent(VIEWER_BRANCH) +
+        '?automind_t=' + Date.now();
+
+      const response = await fetch(apiUrl, {{
+        method: 'GET',
+        mode: 'cors',
+        cache: 'no-store',
+        headers: {{ Accept: 'application/vnd.github+json' }}
+      }});
+
+      if (!response.ok) {{
+        const detail = await response.text().catch(() => '');
+        throw new Error(
+          'No pude obtener el último commit de GitHub.\n' +
+          'HTTP ' + response.status + '\n' +
+          detail.slice(0, 500)
+        );
+      }}
+
+      const data = await response.json();
+      const sha = String(data?.sha || '');
+      if (!/^[0-9a-f]{{40}}$/i.test(sha)) {{
+        throw new Error('GitHub devolvió un SHA inválido: ' + JSON.stringify(sha));
+      }}
+
+      const componentPath = String(VIEWER_COMP_FILE)
+        .replaceAll('\\', '/')
+        .replace(/^\/+/, '');
+
+      return {{
+        sha,
+        shortSha: sha.slice(0, 7),
+        entryUrl:
+          'https://cdn.jsdelivr.net/gh/' +
+          VIEWER_REPO + '@' + sha + '/' + componentPath,
+        commitUrl: 'https://github.com/' + VIEWER_REPO + '/commit/' + sha
+      }};
+    }}
+
+    async function importCdnModule(entryUrl, commitSha) {{
       // Los módulos locales llegan como data: URL ya auto-contenida; agregar un
       // query string los invalida. Los módulos remotos mantienen cache-busting.
       const importUrl = /^data:/i.test(entryUrl)
         ? entryUrl
-        : entryUrl + (entryUrl.includes('?') ? '&' : '?') + 'automind_sha=' + encodeURIComponent(VIEWER_COMMIT_SHA);
+        : entryUrl +
+          (entryUrl.includes('?') ? '&' : '?') +
+          'automind_sha=' + encodeURIComponent(commitSha);
       try {{
         return await import(importUrl);
       }} catch (error) {{
@@ -1347,6 +1431,7 @@ def MJCF_Visualization(
         throw new Error(
           'Falló import() del sistema modular.\n' +
           'Archivo: ' + VIEWER_COMP_FILE + '\n' +
+          'Commit: ' + commitSha + '\n' +
           'URL: ' + importUrl + '\n\n' + detail
         );
       }}
@@ -1379,7 +1464,22 @@ def MJCF_Visualization(
         console.warn('[AutoMind MJCF] Texturas MJCF ausentes; se usó fallback blanco si está habilitado:', MISSING_TEXTURES);
       }}
 
-      const module = await importCdnModule(VIEWER_ENTRY_URL);
+      const latestViewer = await resolveLatestRemoteViewer();
+      VIEWER_ENTRY_URL = latestViewer.entryUrl;
+      VIEWER_COMMIT_SHA = latestViewer.sha;
+      VIEWER_COMMIT_SHORT_SHA = latestViewer.shortSha;
+      VIEWER_COMMIT_URL = latestViewer.commitUrl;
+
+      opts.commitSha = VIEWER_COMMIT_SHA;
+      opts.commitUrl = VIEWER_COMMIT_URL;
+
+      console.info(
+        '[AutoMind MJCF] Viewer cargado:',
+        VIEWER_COMMIT_SHORT_SHA,
+        VIEWER_ENTRY_URL
+      );
+
+      const module = await importCdnModule(VIEWER_ENTRY_URL, VIEWER_COMMIT_SHA);
       if (!module || typeof module.render !== 'function') {{
         throw new Error('El módulo cargó, pero no exporta render(opts).');
       }}
