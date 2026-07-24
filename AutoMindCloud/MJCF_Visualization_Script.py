@@ -16,6 +16,8 @@
 #   8) En modo remoto, el HTML embebido consulta el último commit de GitHub al
 #      cargarse y construye una URL jsDelivr fijada al SHA nuevo. De esta forma,
 #      el output guardado puede usar la versión más reciente sin reejecutar Python.
+#   9) Protege HTML descargados abiertos por file://: evita que Audio/preload,
+#      fetch/XHR vacíos o imports dinámicos locales intenten cargar el propio HTML.
 #
 # Uso típico en Google Colab:
 #   from MJCF_Render_Script import MJCF_Render, MJCF_Visualization
@@ -992,8 +994,20 @@ def _local_viewer_data_url(viewer_zip: str, component_file: str) -> tuple[str, d
 
     module_cache: dict[Path, str] = {}
     visiting: set[Path] = set()
-    import_pattern = re.compile(
+
+    # Reescribe las tres formas de import relativo que pueden existir en un
+    # bundle modular:
+    #   import x from "./x.js"
+    #   import "./x.js"
+    #   await import("./x.js")
+    # La versión anterior no cubría import(...), por lo que un entrypoint data:
+    # podía intentar resolver el módulo contra el documento file:// exterior.
+    static_import_pattern = re.compile(
         r"(?P<prefix>\bfrom\s*['\"]|\bimport\s*['\"])(?P<spec>\.[^'\"]+)(?P<suffix>['\"])",
+        flags=re.MULTILINE,
+    )
+    dynamic_import_pattern = re.compile(
+        r"(?P<prefix>\bimport\s*\(\s*['\"])(?P<spec>\.[^'\"]+)(?P<suffix>['\"]\s*\))",
         flags=re.MULTILINE,
     )
 
@@ -1016,7 +1030,8 @@ def _local_viewer_data_url(viewer_zip: str, component_file: str) -> tuple[str, d
             target_url = build_module(target)
             return match.group("prefix") + target_url + match.group("suffix")
 
-        source = import_pattern.sub(replace_import, source)
+        source = static_import_pattern.sub(replace_import, source)
+        source = dynamic_import_pattern.sub(replace_import, source)
         data_url = "data:text/javascript;base64," + base64.b64encode(source.encode("utf-8")).decode("ascii")
         module_cache[path] = data_url
         visiting.remove(path)
@@ -1189,6 +1204,16 @@ def MJCF_Visualization(
         return _html_error("Error preparando OBJ, MTL y texturas", str(error))
 
     relative_xml_path = os.path.relpath(mjcf_path, folder_path).replace("\\", "/")
+
+    # El XML también queda disponible como asset embebido. El viewer normalmente
+    # usa mjcfContent directamente, pero esta copia evita que cualquier fallback
+    # intente resolver una ruta física file://.
+    embedded_mjcf_key = relative_xml_path or "model.xml"
+    embedded_mjcf_b64 = base64.b64encode(mjcf_raw.encode("utf-8")).decode("ascii")
+    for alias in _asset_key_variants(embedded_mjcf_key):
+        asset_db.setdefault(alias, embedded_mjcf_b64)
+    asset_db.setdefault("model.xml", embedded_mjcf_b64)
+
     mjcf_js = _esc_js_template(mjcf_raw)
     asset_js = json.dumps(asset_db, ensure_ascii=False, separators=(",", ":"))
     background_value = 0xFFFFFF if background is None else int(background)
@@ -1258,6 +1283,166 @@ def MJCF_Visualization(
       <img src="https://raw.githubusercontent.com/artemioadaysolvers/AutoMindCloudExperimental/main/AutoMindCloud/AutoMindCloud2.png" alt="AutoMind" style="display:block; height:40px; width:auto;"/>
     </div>
   </div>
+
+  <!--
+    Protección temprana para HTML independientes abiertos mediante file://.
+    Debe ejecutarse antes de Three.js y antes del módulo del viewer.
+  -->
+  <script>
+    (() => {{
+      'use strict';
+
+      const IS_LOCAL_FILE = window.location.protocol === 'file:';
+      const SILENT_AUDIO_URL =
+        'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAACAgICA';
+
+      window.AutoMindMJCFStandaloneFile = IS_LOCAL_FILE;
+
+      if (!IS_LOCAL_FILE) return;
+
+      function normalizedUrl(value) {{
+        let raw = '';
+        try {{
+          raw = value instanceof Request
+            ? String(value.url || '').trim()
+            : String(value == null ? '' : value).trim();
+        }} catch (_ignore) {{
+          raw = '';
+        }}
+
+        if (!raw) return {{ raw: '', url: null, blocked: true }};
+
+        try {{
+          const url = new URL(raw, document.baseURI || window.location.href);
+          return {{
+            raw,
+            url,
+            blocked: url.protocol === 'file:'
+          }};
+        }} catch (_ignore) {{
+          return {{ raw, url: null, blocked: false }};
+        }}
+      }}
+
+      // fetch("") y fetch de rutas relativas no deben recaer sobre file://.
+      const nativeFetch = typeof window.fetch === 'function'
+        ? window.fetch.bind(window)
+        : null;
+
+      if (nativeFetch) {{
+        window.fetch = function(input, init) {{
+          const check = normalizedUrl(input);
+          if (check.blocked) {{
+            console.debug('[AutoMind file-safe] fetch local bloqueado:', check.raw);
+            return Promise.resolve(
+              new Response('', {{
+                status: 204,
+                statusText: 'Local file request blocked'
+              }})
+            );
+          }}
+          return nativeFetch(input, init);
+        }};
+      }}
+
+      // Igual protección para XHR heredados.
+      try {{
+        const nativeOpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url, ...rest) {{
+          const check = normalizedUrl(url);
+          if (check.blocked) {{
+            console.debug('[AutoMind file-safe] XHR local bloqueado:', check.raw);
+            return nativeOpen.call(
+              this,
+              method,
+              'data:application/octet-stream;base64,',
+              ...rest
+            );
+          }}
+          return nativeOpen.call(this, method, url, ...rest);
+        }};
+      }} catch (_ignore) {{}}
+
+      // Causa principal del aviso observado: el viewer crea new Audio(), cambia
+      // preload y solo después asigna la URL. En file://, Chromium puede intentar
+      // precargar el src vacío como el propio HTML. Todo Audio sin src nace ahora
+      // con un WAV silencioso data:, que luego es reemplazado por el sonido real.
+      try {{
+        const NativeAudio = window.Audio;
+        if (typeof NativeAudio === 'function' && !NativeAudio.__AutoMindFileSafe) {{
+          function FileSafeAudio(source) {{
+            const requested = String(source == null ? '' : source).trim();
+            return new NativeAudio(requested || SILENT_AUDIO_URL);
+          }}
+          FileSafeAudio.prototype = NativeAudio.prototype;
+          Object.setPrototypeOf(FileSafeAudio, NativeAudio);
+          FileSafeAudio.__AutoMindFileSafe = true;
+          window.Audio = FileSafeAudio;
+        }}
+      }} catch (_ignore) {{}}
+
+      // También protege audio/video creados con document.createElement antes de
+      // que una asignación preload pueda iniciar una solicitud con src vacío.
+      try {{
+        const descriptor = Object.getOwnPropertyDescriptor(
+          HTMLMediaElement.prototype,
+          'preload'
+        );
+        if (descriptor?.get && descriptor?.set && !descriptor.set.__AutoMindFileSafe) {{
+          const safeSet = function(value) {{
+            const raw = String(this.getAttribute('src') || '').trim();
+            if (!raw) this.setAttribute('src', SILENT_AUDIO_URL);
+            return descriptor.set.call(this, value);
+          }};
+          safeSet.__AutoMindFileSafe = true;
+          Object.defineProperty(HTMLMediaElement.prototype, 'preload', {{
+            configurable: descriptor.configurable,
+            enumerable: descriptor.enumerable,
+            get: descriptor.get,
+            set: safeSet
+          }});
+        }}
+      }} catch (_ignore) {{}}
+
+      // Evita que setters DOM de recursos vacíos se resuelvan como el HTML actual.
+      const resourceProperties = [
+        [window.HTMLImageElement, 'src'],
+        [window.HTMLScriptElement, 'src'],
+        [window.HTMLSourceElement, 'src'],
+        [window.HTMLIFrameElement, 'src'],
+        [window.HTMLFrameElement, 'src'],
+        [window.HTMLObjectElement, 'data'],
+        [window.HTMLEmbedElement, 'src'],
+        [window.HTMLTrackElement, 'src'],
+        [window.HTMLInputElement, 'src'],
+        [window.HTMLLinkElement, 'href']
+      ];
+
+      for (const [Constructor, property] of resourceProperties) {{
+        if (!Constructor?.prototype) continue;
+        try {{
+          const descriptor = Object.getOwnPropertyDescriptor(
+            Constructor.prototype,
+            property
+          );
+          if (!descriptor?.get || !descriptor?.set) continue;
+          Object.defineProperty(Constructor.prototype, property, {{
+            configurable: descriptor.configurable,
+            enumerable: descriptor.enumerable,
+            get: descriptor.get,
+            set(value) {{
+              const check = normalizedUrl(value);
+              if (check.blocked) {{
+                try {{ this.removeAttribute(property); }} catch (_ignore) {{}}
+                return;
+              }}
+              return descriptor.set.call(this, value);
+            }}
+          }});
+        }} catch (_ignore) {{}}
+      }}
+    }})();
+  </script>
 
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
@@ -1341,6 +1526,7 @@ def MJCF_Visualization(
     }}
 
     function setColabFrameHeight() {{
+      if (window.location.protocol === 'file:') return;
       try {{
         const height = Math.ceil(desiredHeight());
         window.google?.colab?.output?.setIframeHeight?.(height, true);
@@ -1440,8 +1626,12 @@ def MJCF_Visualization(
     const opts = {{
       container: document.getElementById('app'),
       mjcfContent: `{mjcf_js}`,
+      // Ruta lógica dentro de assetDB; nunca es una ruta física file://.
       mjcfPath: {mjcf_path_js},
       assetDB: {asset_js},
+      embeddedAssetsOnly: true,
+      disableLocalFileFallback: true,
+      standaloneFile: window.location.protocol === 'file:',
       selectMode: {select_mode_js},
       background: {background_js},
       pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
