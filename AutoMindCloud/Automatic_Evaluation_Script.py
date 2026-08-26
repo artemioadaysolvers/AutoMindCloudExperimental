@@ -54,17 +54,18 @@ def search(symbolo,DatosList):
   return sympy.latex(symbolo)
 
 
-def Redondear(expr):#Redondeamos la expresión.
-  if isinstance(expr, sympy.Expr) or isinstance(expr, sympy.Float):
-    Aproximacion = expr.xreplace(sympy.core.rules.Transform(lambda x: x.round(Orden), lambda x: isinstance(x, sympy.Float)))
-  elif isinstance(expr,float) or isinstance(expr,int):
+def Redondear(expr):  # Redondeamos la expresión
+  if isinstance(expr, sympy.Piecewise):
+    casos = [(Redondear(valor), Redondear(condicion)) for valor, condicion in expr.args]
+    Aproximacion = sympy.Piecewise(*casos, evaluate=False)
+  elif isinstance(expr, sympy.Basic):
+    reemplazos = {x: sympy.Float(round(float(x),Orden)) for x in expr.atoms(sympy.Float)}
+    Aproximacion = expr.xreplace(reemplazos)
+  elif isinstance(expr,(float,int)):
     Aproximacion = round(expr,Orden)
   else:
     Aproximacion = expr
   return Aproximacion
-
-def S(c_componente):#Guardar
-  global DatosList,Orden,Color#Documento
   
   dentro = False#Supongamos que el elemento no esté dentro
 
