@@ -66,6 +66,10 @@ def Redondear(expr):  # Redondeamos la expresión
   else:
     Aproximacion = expr
   return Aproximacion
+
+
+def S(c_componente):#Guardar
+  global DatosList,Orden,Color#Documento
   
   dentro = False#Supongamos que el elemento no esté dentro
 
